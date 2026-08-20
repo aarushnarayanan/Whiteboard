@@ -1,0 +1,31 @@
+{
+  "name": "server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
+    "migrate": "tsx --env-file-if-exists=.env src/db/migrate.ts",
+    "db:generate": "drizzle-kit generate",
+    "test": "vitest run",
+    "build": "tsc",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "start": "node --env-file-if-exists=.env dist/index.js"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.36.4",
+    "pg": "^8.13.1",
+    "ws": "^8.18.0",
+    "y-protocols": "^1.0.6",
+    "yjs": "^13.6.20"
+  },
+  "devDependencies": {
+    "@types/node": "^24.11.1",
+    "@types/pg": "^8.11.10",
+    "@types/ws": "^8.5.13",
+    "drizzle-kit": "^0.28.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.8",
+    "y-websocket": "^2.1.0"
+  }
+}

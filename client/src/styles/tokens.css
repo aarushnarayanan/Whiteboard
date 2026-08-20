@@ -1,0 +1,45 @@
+:root {
+  /* spacing — 4px scale */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 40px;
+  --space-2xl: 64px;
+
+  /* type — sans, one family until a reason to add a second */
+  --font-sans: system-ui, -apple-system, sans-serif;
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-base: 16px;
+  --text-lg: 18px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+
+  /* radii */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* shadow */
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.06);
+  --shadow-md: 0 2px 8px rgb(0 0 0 / 0.10);
+  --shadow-lg: 0 8px 24px rgb(0 0 0 / 0.14);
+
+  /* color — cool/neutral, toned not pure */
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --text: #1a1a1a;
+  --text-muted: #6b7280;
+  --border: #e5e7eb;
+
+  --primary: oklch(55% 0.18 250);
+  --primary-hover: oklch(50% 0.18 250);
+  --primary-light: oklch(93% 0.03 250);
+
+  --success: #10b981;
+  --warning: #f59e0b;
+  --error: #dc2626;
+
+  --transition-fast: 0.2s ease;
+}
