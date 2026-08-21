@@ -10,6 +10,8 @@ export default defineConfig({
         target: 'ws://localhost:3001',
         ws: true,
       },
+      '/auth': 'http://localhost:3001',
+      '/boards': 'http://localhost:3001',
     },
   },
 })

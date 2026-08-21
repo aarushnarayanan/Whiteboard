@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { Stage, Layer, Rect, Ellipse, Transformer } from "react-konva";
 import type Konva from "konva";
 import type { KonvaEventObject } from "konva/lib/Node";
@@ -8,25 +8,36 @@ import { useBoardDoc } from "../board/useBoardDoc";
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 4;
 
+export type BoardRole = "owner" | "editor" | "viewer";
+
+export interface CanvasHandle {
+  /** A small snapshot of the current canvas, or null if the stage isn't mounted. */
+  captureThumbnail: () => string | null;
+}
+
 interface CanvasProps {
   boardId: string;
-  role: "editor" | "viewer";
+  role: BoardRole;
   tool: Tool;
   onToolUsed: () => void;
 }
 
-export default function Canvas({ boardId, role, tool, onToolUsed }: CanvasProps) {
-  const canEdit = role === "editor";
+const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({ boardId, role, tool, onToolUsed }, ref) {
+  const canEdit = role !== "viewer";
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
   const transformerRef = useRef<Konva.Transformer>(null);
   const shapeRefs = useRef(new Map<string, Konva.Node>());
 
   const [size, setSize] = useState({ width: 0, height: 0 });
-  const { shapes, upsertShape, removeShape, getShape } = useBoardDoc(boardId, role);
+  const { shapes, upsertShape, removeShape, getShape } = useBoardDoc(boardId);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const drawingId = useRef<string | null>(null);
   const drawStart = useRef({ x: 0, y: 0 });
+
+  useImperativeHandle(ref, () => ({
+    captureThumbnail: () => stageRef.current?.toDataURL({ pixelRatio: 0.5 }) ?? null,
+  }));
 
   useEffect(() => {
     const el = containerRef.current;
@@ -214,4 +225,6 @@ export default function Canvas({ boardId, role, tool, onToolUsed }: CanvasProps)
       </Stage>
     </div>
   );
-}
+});
+
+export default Canvas;

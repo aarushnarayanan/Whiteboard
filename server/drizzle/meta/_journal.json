@@ -8,6 +8,27 @@
       "when": 1787218502154,
       "tag": "0000_kind_vulcan",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1787298425161,
+      "tag": "0001_groovy_scrambler",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787351016413,
+      "tag": "0002_nosy_masque",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1787351264594,
+      "tag": "0003_faithful_guardian",
+      "breakpoints": true
     }
   ]
 }

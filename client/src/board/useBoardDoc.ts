@@ -3,7 +3,7 @@ import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
 import type { ShapeObj } from "../canvas/types";
 
-export function useBoardDoc(boardId: string, role: "editor" | "viewer") {
+export function useBoardDoc(boardId: string) {
   const docRef = useRef<Y.Doc | undefined>(undefined);
   if (!docRef.current) {
     docRef.current = new Y.Doc();
@@ -15,10 +15,13 @@ export function useBoardDoc(boardId: string, role: "editor" | "viewer") {
     const doc = docRef.current!;
     const shapesMap = doc.getMap<Y.Map<unknown>>("shapes");
 
+    // No role/token is sent here — the server reads the session cookie itself
+    // (browsers attach cookies to a same-origin WS handshake automatically)
+    // and looks up the real role from board_members. This URL is purely
+    // "which board."
     const serverUrl = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/ws/boards`;
     const provider = new WebsocketProvider(serverUrl, boardId, doc, {
       connect: true,
-      params: { role },
     });
 
     function syncShapes() {
@@ -34,7 +37,7 @@ export function useBoardDoc(boardId: string, role: "editor" | "viewer") {
       shapesMap.unobserveDeep(syncShapes);
       provider.destroy();
     };
-  }, [boardId, role]);
+  }, [boardId]);
 
   function upsertShape(shape: ShapeObj) {
     const shapesMap = docRef.current!.getMap<Y.Map<unknown>>("shapes");

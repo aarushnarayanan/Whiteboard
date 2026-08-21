@@ -1,6 +1,11 @@
 import type { IncomingMessage } from "node:http";
+import { and, eq } from "drizzle-orm";
+import { verifyToken } from "../auth/jwt.js";
+import { getCookie } from "../auth/middleware.js";
+import { db } from "../db/index.js";
+import { boardMembers } from "../db/schema.js";
 
-export type BoardRole = "editor" | "viewer";
+export type BoardRole = "owner" | "editor" | "viewer";
 
 export interface StubAuthResult {
   boardId: string;
@@ -9,18 +14,32 @@ export interface StubAuthResult {
 
 const BOARD_PATH = /^\/ws\/boards\/([^/]+)$/;
 
-// ponytail: role comes from a query param instead of a real session,
-// since sign-in (phase 08) and permissions (phase 09) don't exist yet.
-// Replace this function's body with a cookie/JWT check + a
-// board_members lookup once those phases land — nothing else in the
-// sync engine needs to change, they only ever see { boardId, role }.
-export function authenticateWSRequest(req: IncomingMessage): StubAuthResult | null {
-  const [path, query] = (req.url ?? "").split("?");
+export async function authenticateWSRequest(req: IncomingMessage): Promise<StubAuthResult | null> {
+  const [path] = (req.url ?? "").split("?");
   const match = BOARD_PATH.exec(path);
   if (!match) return null;
+  const boardId = match[1];
 
-  const role = new URLSearchParams(query ?? "").get("role");
-  if (role !== "editor" && role !== "viewer") return null;
+  const token = getCookie(req.headers.cookie, "access_token");
+  if (!token) return null;
 
-  return { boardId: match[1], role };
+  let userId: string;
+  try {
+    userId = verifyToken(token).sub;
+  } catch {
+    return null;
+  }
+
+  try {
+    const [membership] = await db
+      .select({ role: boardMembers.role })
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, userId), eq(boardMembers.boardId, boardId)));
+    if (!membership) return null;
+    return { boardId, role: membership.role };
+  } catch {
+    // Malformed boardId (not a valid uuid) or a transient DB error both mean
+    // "can't confirm access" — treat the same as no membership, not a crash.
+    return null;
+  }
 }

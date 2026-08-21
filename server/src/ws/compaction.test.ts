@@ -1,6 +1,8 @@
 import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import * as Y from "yjs";
 import { runMigrations } from "../db/migrate.js";
+import { db } from "../db/index.js";
+import { boards } from "../db/schema.js";
 import { pool } from "../db/pool.js";
 import { persistUpdate } from "./docStore.js";
 import { compactBoard } from "./compaction.js";
@@ -15,7 +17,8 @@ describe("compactBoard", () => {
   });
 
   it("merges updates into a snapshot and clears the update log", async () => {
-    const boardId = `compaction-test-${Date.now()}`;
+    const [board] = await db.insert(boards).values({}).returning();
+    const boardId = board.id;
 
     const doc = new Y.Doc();
     doc.getMap("shapes").set("a", "1");

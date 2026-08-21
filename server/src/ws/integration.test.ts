@@ -1,11 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
+import { eq, like } from "drizzle-orm";
 import WebSocket from "ws";
 import * as Y from "yjs";
 import * as encoding from "lib0/encoding";
 import { WebsocketProvider } from "y-websocket";
+import { signAccessToken } from "../auth/jwt.js";
 import { runMigrations } from "../db/migrate.js";
+import { db } from "../db/index.js";
+import { boardMembers, boards, users } from "../db/schema.js";
 import { pool } from "../db/pool.js";
 import { createBoardServer } from "../httpServer.js";
 import { acquireDoc, releaseDoc } from "./docStore.js";
@@ -14,18 +18,50 @@ const MESSAGE_AWARENESS = 1;
 
 let server: Server;
 let port: number;
+const createdBoardIds: string[] = [];
+let userCounter = 0;
 
-function url(boardId: string, role: string) {
-  return `ws://127.0.0.1:${port}/ws/boards/${boardId}?role=${role}`;
+async function makeBoard(): Promise<string> {
+  const [board] = await db.insert(boards).values({}).returning();
+  createdBoardIds.push(board.id);
+  return board.id;
 }
 
-function connectProvider(boardId: string, role: "editor" | "viewer", doc: Y.Doc) {
+/** Creates a real user with membership on a board, returns their session cookie. */
+async function makeMember(boardId: string, role: "owner" | "editor" | "viewer"): Promise<string> {
+  userCounter += 1;
+  const [user] = await db
+    .insert(users)
+    .values({
+      email: `integration-test-${Date.now()}-${userCounter}@example.com`,
+      name: "Test User",
+      passwordHash: "x",
+    })
+    .returning();
+  await db.insert(boardMembers).values({ userId: user.id, boardId, role });
+  return `access_token=${signAccessToken({ sub: user.id })}`;
+}
+
+function url(boardId: string) {
+  return `ws://127.0.0.1:${port}/ws/boards/${boardId}`;
+}
+
+/** ws (unlike a real browser) needs the Cookie header supplied explicitly. */
+function cookiePolyfill(cookie: string): typeof globalThis.WebSocket {
+  class CookieWebSocket extends WebSocket {
+    constructor(address: string | URL, protocols?: string | string[]) {
+      super(address, protocols, { headers: { cookie } });
+    }
+  }
+  return CookieWebSocket as unknown as typeof globalThis.WebSocket;
+}
+
+function connectProvider(boardId: string, cookie: string, doc: Y.Doc) {
   return new WebsocketProvider(`ws://127.0.0.1:${port}/ws/boards`, boardId, doc, {
-    params: { role },
     // The BroadcastChannel fallback would let two providers in this one process
     // sync peer-to-peer, which would make every assertion below meaningless.
     disableBc: true,
-    WebSocketPolyfill: WebSocket as unknown as typeof globalThis.WebSocket,
+    WebSocketPolyfill: cookiePolyfill(cookie),
   });
 }
 
@@ -76,19 +112,25 @@ describe("sync engine over a real WebSocket server", () => {
   afterAll(async () => {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    // The last disconnect kicks off a compaction; let it finish before the pool
-    // is torn out from under it.
+    // The last disconnect kicks off a compaction; let it finish before cleanup.
     await new Promise((resolve) => setTimeout(resolve, 500));
+    // Deleting boards cascades to their board_members/board_updates/board_snapshots.
+    for (const boardId of createdBoardIds) {
+      await db.delete(boards).where(eq(boards.id, boardId));
+    }
+    await db.delete(users).where(like(users.email, "integration-test-%"));
     await pool.end();
   });
 
   it("broadcasts an editor's edit to a viewer and drops the viewer's own edit", async () => {
-    const boardId = `integration-broadcast-${Date.now()}`;
+    const boardId = await makeBoard();
+    const editorCookie = await makeMember(boardId, "editor");
+    const viewerCookie = await makeMember(boardId, "viewer");
 
     const editorDoc = new Y.Doc();
     const viewerDoc = new Y.Doc();
-    const editor = connectProvider(boardId, "editor", editorDoc);
-    const viewer = connectProvider(boardId, "viewer", viewerDoc);
+    const editor = connectProvider(boardId, editorCookie, editorDoc);
+    const viewer = connectProvider(boardId, viewerCookie, viewerDoc);
 
     try {
       await Promise.all([whenSynced(editor), whenSynced(viewer)]);
@@ -120,11 +162,25 @@ describe("sync engine over a real WebSocket server", () => {
     }
   }, 20000);
 
-  it("relays awareness frames to the board's sockets, sender included", async () => {
-    const boardId = `integration-awareness-${Date.now()}`;
+  it("rejects a connection with no session cookie", async () => {
+    const boardId = await makeBoard();
+    const ws = new WebSocket(url(boardId));
+    const outcome = await new Promise<string>((resolve) => {
+      ws.on("unexpected-response", (_req, res) => resolve(`unexpected-response:${res.statusCode}`));
+      ws.on("error", () => resolve("error"));
+      ws.on("close", (code) => resolve(`close:${code}`));
+      ws.on("open", () => resolve("open"));
+    });
+    expect(outcome).not.toBe("open");
+  }, 10000);
 
-    const a = new WebSocket(url(boardId, "editor"));
-    const b = new WebSocket(url(boardId, "viewer"));
+  it("relays awareness frames to the board's sockets, sender included", async () => {
+    const boardId = await makeBoard();
+    const cookieA = await makeMember(boardId, "editor");
+    const cookieB = await makeMember(boardId, "viewer");
+
+    const a = new WebSocket(url(boardId), { headers: { cookie: cookieA } });
+    const b = new WebSocket(url(boardId), { headers: { cookie: cookieB } });
     const received: { a: Uint8Array[]; b: Uint8Array[] } = { a: [], b: [] };
     a.binaryType = "arraybuffer";
     b.binaryType = "arraybuffer";
@@ -159,9 +215,10 @@ describe("sync engine over a real WebSocket server", () => {
   }, 20000);
 
   it("keeps an idle connection alive past the client's 30s reconnect timeout", async () => {
-    const boardId = `integration-idle-${Date.now()}`;
+    const boardId = await makeBoard();
+    const cookie = await makeMember(boardId, "editor");
     const doc = new Y.Doc();
-    const provider = connectProvider(boardId, "editor", doc);
+    const provider = connectProvider(boardId, cookie, doc);
 
     const statuses: string[] = [];
     provider.on("status", ({ status }: { status: string }) => statuses.push(status));

@@ -2,8 +2,15 @@ import { describe, it, expect, afterAll, beforeAll, vi } from "vitest";
 import * as Y from "yjs";
 import { Pool } from "pg";
 import { runMigrations } from "../db/migrate.js";
+import { db } from "../db/index.js";
+import { boards } from "../db/schema.js";
 import { pool } from "../db/pool.js";
 import { acquireDoc, releaseDoc, persistUpdate } from "./docStore.js";
+
+async function makeBoard(): Promise<string> {
+  const [board] = await db.insert(boards).values({}).returning();
+  return board.id;
+}
 
 describe("docStore", () => {
   beforeAll(async () => {
@@ -15,7 +22,7 @@ describe("docStore", () => {
   });
 
   it("reconstructs a board's doc from persisted updates", async () => {
-    const boardId = `docstore-test-${Date.now()}`;
+    const boardId = await makeBoard();
 
     const source = new Y.Doc();
     source.getMap("shapes").set("a", "hello");
@@ -31,7 +38,7 @@ describe("docStore", () => {
     // created_at <= snapshot.updated_at, so an update racing a compaction (or
     // read against a snapshot committed after it) vanished from the board.
     // Yjs updates are idempotent, so the load now replays every stored row.
-    const boardId = `docstore-race-test-${Date.now()}`;
+    const boardId = await makeBoard();
 
     const base = new Y.Doc();
     base.getMap("shapes").set("kept", "from-snapshot");
@@ -58,7 +65,7 @@ describe("docStore", () => {
   });
 
   it("retries load after transient DB error", async () => {
-    const boardId = `docstore-retry-test-${Date.now()}`;
+    const boardId = await makeBoard();
 
     const source = new Y.Doc();
     source.getMap("shapes").set("b", "world");
