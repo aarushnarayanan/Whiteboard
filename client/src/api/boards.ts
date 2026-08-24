@@ -41,6 +41,24 @@ export async function uploadThumbnail(boardId: string, dataUrl: string): Promise
   });
 }
 
+export async function renameBoard(boardId: string, title: string): Promise<void> {
+  const res = await fetch(`/boards/${boardId}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ title }),
+  });
+  await parseJsonOrThrow(res);
+}
+
+export async function deleteBoard(boardId: string): Promise<void> {
+  const res = await fetch(`/boards/${boardId}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  await parseJsonOrThrow(res);
+}
+
 export async function inviteMember(boardId: string, email: string, role: "editor" | "viewer"): Promise<void> {
   const res = await fetch(`/boards/${boardId}/members`, {
     method: "POST",

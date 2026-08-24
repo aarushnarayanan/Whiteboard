@@ -78,6 +78,51 @@ boardsRouter.post(
   }),
 );
 
+boardsRouter.patch(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+    const { title } = req.body ?? {};
+    if (typeof title !== "string" || title.trim() === "") {
+      res.status(400).json({ error: "title is required" });
+      return;
+    }
+
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership || membership.role === "viewer") {
+      res.status(403).json({ error: "you don't have permission to rename this board" });
+      return;
+    }
+
+    await db.update(boards).set({ title, updatedAt: new Date() }).where(eq(boards.id, boardId));
+    res.status(200).json({ ok: true });
+  }),
+);
+
+boardsRouter.delete(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership || membership.role !== "owner") {
+      res.status(403).json({ error: "only the owner can delete this board" });
+      return;
+    }
+
+    // board_members, board_updates, and board_snapshots all cascade-delete
+    // from this via their foreign keys (migration 0003) — nothing else to clean up.
+    await db.delete(boards).where(eq(boards.id, boardId));
+    res.status(200).json({ ok: true });
+  }),
+);
+
 boardsRouter.post(
   "/:id/members",
   asyncHandler(async (req, res) => {

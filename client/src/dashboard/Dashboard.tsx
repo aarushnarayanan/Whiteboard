@@ -1,15 +1,36 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { createBoard, inviteMember, listBoards, type BoardSummary } from "../api/boards";
+import {
+  createBoard,
+  deleteBoard,
+  inviteMember,
+  listBoards,
+  renameBoard,
+  type BoardSummary,
+} from "../api/boards";
 
 interface DashboardProps {
   onOpenBoard: (board: BoardSummary) => void;
 }
 
-function BoardCard({ board, onOpenBoard }: { board: BoardSummary; onOpenBoard: (b: BoardSummary) => void }) {
+interface BoardCardProps {
+  board: BoardSummary;
+  onOpenBoard: (b: BoardSummary) => void;
+  onRenamed: (boardId: string, title: string) => void;
+  onDeleted: (boardId: string) => void;
+}
+
+function BoardCard({ board, onOpenBoard, onRenamed, onDeleted }: BoardCardProps) {
+  const canEdit = board.role !== "viewer";
+  const isOwner = board.role === "owner";
+
   const [sharing, setSharing] = useState(false);
   const [shareEmail, setShareEmail] = useState("");
   const [shareRole, setShareRole] = useState<"editor" | "viewer">("editor");
   const [shareStatus, setShareStatus] = useState<string | null>(null);
+
+  const [renaming, setRenaming] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(board.title);
+  const [renameError, setRenameError] = useState<string | null>(null);
 
   async function handleShare(e: FormEvent) {
     e.preventDefault();
@@ -23,6 +44,28 @@ function BoardCard({ board, onOpenBoard }: { board: BoardSummary; onOpenBoard: (
     }
   }
 
+  async function handleRename(e: FormEvent) {
+    e.preventDefault();
+    setRenameError(null);
+    try {
+      await renameBoard(board.id, titleDraft);
+      onRenamed(board.id, titleDraft);
+      setRenaming(false);
+    } catch (err) {
+      setRenameError(err instanceof Error ? err.message : "couldn't rename");
+    }
+  }
+
+  async function handleDelete() {
+    if (!window.confirm(`Delete "${board.title}"? This can't be undone.`)) return;
+    try {
+      await deleteBoard(board.id);
+      onDeleted(board.id);
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "couldn't delete");
+    }
+  }
+
   return (
     <div className="board-card">
       <button type="button" className="board-card-open" onClick={() => onOpenBoard(board)}>
@@ -32,29 +75,54 @@ function BoardCard({ board, onOpenBoard }: { board: BoardSummary; onOpenBoard: (
         <div className="board-card-title">{board.title}</div>
         {board.role !== "owner" && <div className="board-card-role">{board.role}</div>}
       </button>
-      {board.role === "owner" && (
-        <div className="board-card-share">
-          <button type="button" onClick={() => setSharing((s) => !s)}>
-            Share
+
+      {canEdit && (
+        <div className="board-card-actions">
+          <button type="button" onClick={() => setRenaming((r) => !r)}>
+            Rename
           </button>
-          {sharing && (
-            <form onSubmit={handleShare}>
-              <input
-                type="email"
-                placeholder="Email"
-                value={shareEmail}
-                onChange={(e) => setShareEmail(e.target.value)}
-                required
-              />
-              <select value={shareRole} onChange={(e) => setShareRole(e.target.value as "editor" | "viewer")}>
-                <option value="editor">Editor</option>
-                <option value="viewer">Viewer</option>
-              </select>
-              <button type="submit">Invite</button>
-              {shareStatus && <span className="board-card-share-status">{shareStatus}</span>}
-            </form>
+          {isOwner && (
+            <>
+              <button type="button" onClick={() => setSharing((s) => !s)}>
+                Share
+              </button>
+              <button type="button" className="board-card-delete" onClick={handleDelete}>
+                Delete
+              </button>
+            </>
           )}
         </div>
+      )}
+
+      {renaming && (
+        <form className="board-card-rename" onSubmit={handleRename}>
+          <input
+            value={titleDraft}
+            onChange={(e) => setTitleDraft(e.target.value)}
+            autoFocus
+            required
+          />
+          <button type="submit">Save</button>
+          {renameError && <span className="board-card-share-status">{renameError}</span>}
+        </form>
+      )}
+
+      {sharing && (
+        <form className="board-card-share" onSubmit={handleShare}>
+          <input
+            type="email"
+            placeholder="Email"
+            value={shareEmail}
+            onChange={(e) => setShareEmail(e.target.value)}
+            required
+          />
+          <select value={shareRole} onChange={(e) => setShareRole(e.target.value as "editor" | "viewer")}>
+            <option value="editor">Editor</option>
+            <option value="viewer">Viewer</option>
+          </select>
+          <button type="submit">Invite</button>
+          {shareStatus && <span className="board-card-share-status">{shareStatus}</span>}
+        </form>
       )}
     </div>
   );
@@ -88,6 +156,14 @@ export default function Dashboard({ onOpenBoard }: DashboardProps) {
   async function handleCreate() {
     const board = await createBoard("Untitled board");
     onOpenBoard(board);
+  }
+
+  function handleRenamed(boardId: string, title: string) {
+    setBoards((prev) => prev.map((b) => (b.id === boardId ? { ...b, title } : b)));
+  }
+
+  function handleDeleted(boardId: string) {
+    setBoards((prev) => prev.filter((b) => b.id !== boardId));
   }
 
   const visible = boards.filter((b) => {
@@ -126,7 +202,13 @@ export default function Dashboard({ onOpenBoard }: DashboardProps) {
         // follow-up, not implemented yet.
         <div className="board-grid">
           {visible.map((board) => (
-            <BoardCard key={board.id} board={board} onOpenBoard={onOpenBoard} />
+            <BoardCard
+              key={board.id}
+              board={board}
+              onOpenBoard={onOpenBoard}
+              onRenamed={handleRenamed}
+              onDeleted={handleDeleted}
+            />
           ))}
         </div>
       )}

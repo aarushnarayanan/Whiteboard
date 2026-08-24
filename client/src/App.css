@@ -252,25 +252,49 @@
   text-transform: capitalize;
 }
 
-.board-card-share {
+.board-card-actions {
+  display: flex;
+  gap: var(--space-xs);
   padding: var(--space-sm) var(--space-md);
   border-top: 1px solid var(--border);
 }
 
-.board-card-share form {
+.board-card-actions button {
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.board-card-delete {
+  margin-left: auto;
+  color: var(--error);
+  border-color: var(--error) !important;
+}
+
+.board-card-share,
+.board-card-rename {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-xs);
-  margin-top: var(--space-xs);
+  padding: 0 var(--space-md) var(--space-sm);
 }
 
 .board-card-share input,
-.board-card-share select {
+.board-card-share select,
+.board-card-rename input {
   padding: var(--space-xs);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   font-size: var(--text-sm);
+}
+
+.board-card-rename input {
+  flex: 1;
+  min-width: 0;
 }
 
 .board-card-share-status {

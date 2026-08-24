@@ -143,4 +143,74 @@ describe("boards routes", () => {
     const found = listed.find((b: { id: string }) => b.id === board.id);
     expect(found.thumbnail).toBe(tinyPng);
   });
+
+  it("lets the owner rename a board, and rejects a viewer's attempt", async () => {
+    const ownerCookie = await signupAndGetCookie("boards-test-owner5@example.com");
+    const viewerCookie = await signupAndGetCookie("boards-test-viewer5@example.com");
+
+    const createRes = await fetch(`${baseUrl}/boards`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ title: "Original title" }),
+    });
+    const board = await createRes.json();
+
+    await fetch(`${baseUrl}/boards/${board.id}/members`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ email: "boards-test-viewer5@example.com", role: "viewer" }),
+    });
+
+    const viewerRenameRes = await fetch(`${baseUrl}/boards/${board.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie: viewerCookie },
+      body: JSON.stringify({ title: "Viewer's title" }),
+    });
+    expect(viewerRenameRes.status).toBe(403);
+
+    const ownerRenameRes = await fetch(`${baseUrl}/boards/${board.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ title: "Renamed board" }),
+    });
+    expect(ownerRenameRes.status).toBe(200);
+
+    const listRes = await fetch(`${baseUrl}/boards`, { headers: { cookie: ownerCookie } });
+    const listed = await listRes.json();
+    expect(listed.find((b: { id: string }) => b.id === board.id).title).toBe("Renamed board");
+  });
+
+  it("lets the owner delete a board, and rejects an editor's attempt", async () => {
+    const ownerCookie = await signupAndGetCookie("boards-test-owner6@example.com");
+    const editorCookie = await signupAndGetCookie("boards-test-editor6@example.com");
+
+    const createRes = await fetch(`${baseUrl}/boards`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ title: "To be deleted" }),
+    });
+    const board = await createRes.json();
+
+    await fetch(`${baseUrl}/boards/${board.id}/members`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ email: "boards-test-editor6@example.com", role: "editor" }),
+    });
+
+    const editorDeleteRes = await fetch(`${baseUrl}/boards/${board.id}`, {
+      method: "DELETE",
+      headers: { cookie: editorCookie },
+    });
+    expect(editorDeleteRes.status).toBe(403);
+
+    const ownerDeleteRes = await fetch(`${baseUrl}/boards/${board.id}`, {
+      method: "DELETE",
+      headers: { cookie: ownerCookie },
+    });
+    expect(ownerDeleteRes.status).toBe(200);
+
+    const listRes = await fetch(`${baseUrl}/boards`, { headers: { cookie: ownerCookie } });
+    const listed = await listRes.json();
+    expect(listed.find((b: { id: string }) => b.id === board.id)).toBeUndefined();
+  });
 });
