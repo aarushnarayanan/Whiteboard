@@ -43,14 +43,7 @@ function App() {
   }
 
   if (!openBoard) {
-    return (
-      <div className="app">
-        <Dashboard onOpenBoard={setOpenBoard} />
-        <button type="button" className="logout-button" onClick={handleLogout}>
-          Log out
-        </button>
-      </div>
-    );
+    return <Dashboard me={me} onOpenBoard={setOpenBoard} onLogout={handleLogout} />;
   }
 
   const canEdit = openBoard.role !== "viewer";

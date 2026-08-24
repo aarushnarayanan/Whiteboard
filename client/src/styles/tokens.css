@@ -42,4 +42,28 @@
   --error: #dc2626;
 
   --transition-fast: 0.2s ease;
+
+  /* Redesign tokens (docs/design_handoff_whiteboard_redesign) — additive.
+     Old tokens above stay in place until Dashboard/Canvas get their own
+     redesign pass; only Login uses these for now. */
+  --font-display: "Public Sans", system-ui, -apple-system, sans-serif;
+
+  --ink-900: #16181d;
+  --ink-700: #3c4049;
+  --ink-500: #6b6f76;
+  --ink-400: #8a8e96;
+  --ink-300: #a9adb4;
+
+  --border-subtle: #e7e8ea;
+  --border-medium: #dbdde1;
+
+  --surface-50: #fbfbfc;
+  --surface-100: #f2f3f5;
+
+  --accent: #3d63dd;
+  --accent-hover: #3454be;
+  --accent-subtle: #eaeffc;
+
+  --danger: #d14343;
+  --danger-subtle: #fbeaea;
 }

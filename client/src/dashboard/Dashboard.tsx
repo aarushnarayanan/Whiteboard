@@ -1,151 +1,184 @@
-import { useEffect, useState, type FormEvent } from "react";
-import {
-  createBoard,
-  deleteBoard,
-  inviteMember,
-  listBoards,
-  renameBoard,
-  type BoardSummary,
-} from "../api/boards";
+import { useEffect, useState } from "react";
+import { createBoard, listBoards, type BoardSummary } from "../api/boards";
+import type { Me } from "../api/auth";
+import BoardCard from "./BoardCard";
 
 interface DashboardProps {
+  me: Me;
   onOpenBoard: (board: BoardSummary) => void;
+  onLogout: () => void;
 }
 
-interface BoardCardProps {
-  board: BoardSummary;
-  onOpenBoard: (b: BoardSummary) => void;
-  onRenamed: (boardId: string, title: string) => void;
-  onDeleted: (boardId: string) => void;
-}
-
-function BoardCard({ board, onOpenBoard, onRenamed, onDeleted }: BoardCardProps) {
-  const canEdit = board.role !== "viewer";
-  const isOwner = board.role === "owner";
-
-  const [sharing, setSharing] = useState(false);
-  const [shareEmail, setShareEmail] = useState("");
-  const [shareRole, setShareRole] = useState<"editor" | "viewer">("editor");
-  const [shareStatus, setShareStatus] = useState<string | null>(null);
-
-  const [renaming, setRenaming] = useState(false);
-  const [titleDraft, setTitleDraft] = useState(board.title);
-  const [renameError, setRenameError] = useState<string | null>(null);
-
-  async function handleShare(e: FormEvent) {
-    e.preventDefault();
-    setShareStatus(null);
-    try {
-      await inviteMember(board.id, shareEmail, shareRole);
-      setShareStatus(`Shared with ${shareEmail}`);
-      setShareEmail("");
-    } catch (err) {
-      setShareStatus(err instanceof Error ? err.message : "couldn't share");
-    }
-  }
-
-  async function handleRename(e: FormEvent) {
-    e.preventDefault();
-    setRenameError(null);
-    try {
-      await renameBoard(board.id, titleDraft);
-      onRenamed(board.id, titleDraft);
-      setRenaming(false);
-    } catch (err) {
-      setRenameError(err instanceof Error ? err.message : "couldn't rename");
-    }
-  }
-
-  async function handleDelete() {
-    if (!window.confirm(`Delete "${board.title}"? This can't be undone.`)) return;
-    try {
-      await deleteBoard(board.id);
-      onDeleted(board.id);
-    } catch (err) {
-      window.alert(err instanceof Error ? err.message : "couldn't delete");
-    }
-  }
-
+function HomeIcon() {
   return (
-    <div className="board-card">
-      <button type="button" className="board-card-open" onClick={() => onOpenBoard(board)}>
-        <div className="board-card-thumbnail">
-          {board.thumbnail ? <img src={board.thumbnail} alt="" /> : <div className="board-card-blank" />}
-        </div>
-        <div className="board-card-title">{board.title}</div>
-        {board.role !== "owner" && <div className="board-card-role">{board.role}</div>}
-      </button>
-
-      {canEdit && (
-        <div className="board-card-actions">
-          <button type="button" onClick={() => setRenaming((r) => !r)}>
-            Rename
-          </button>
-          {isOwner && (
-            <>
-              <button type="button" onClick={() => setSharing((s) => !s)}>
-                Share
-              </button>
-              <button type="button" className="board-card-delete" onClick={handleDelete}>
-                Delete
-              </button>
-            </>
-          )}
-        </div>
-      )}
-
-      {renaming && (
-        <form className="board-card-rename" onSubmit={handleRename}>
-          <input
-            value={titleDraft}
-            onChange={(e) => setTitleDraft(e.target.value)}
-            autoFocus
-            required
-          />
-          <button type="submit">Save</button>
-          {renameError && <span className="board-card-share-status">{renameError}</span>}
-        </form>
-      )}
-
-      {sharing && (
-        <form className="board-card-share" onSubmit={handleShare}>
-          <input
-            type="email"
-            placeholder="Email"
-            value={shareEmail}
-            onChange={(e) => setShareEmail(e.target.value)}
-            required
-          />
-          <select value={shareRole} onChange={(e) => setShareRole(e.target.value as "editor" | "viewer")}>
-            <option value="editor">Editor</option>
-            <option value="viewer">Viewer</option>
-          </select>
-          <button type="submit">Invite</button>
-          {shareStatus && <span className="board-card-share-status">{shareStatus}</span>}
-        </form>
-      )}
-    </div>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M3 10.5L12 3l9 7.5M5 9.5V20a1 1 0 001 1h4v-6h4v6h4a1 1 0 001-1V9.5"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 
-type ViewFilter = "owned" | "shared" | "all";
+function RecentIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M12 7v5l3.5 2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
 
-const VIEW_LABELS: Record<ViewFilter, string> = {
-  all: "All boards",
-  owned: "Your boards",
-  shared: "Shared with you",
+function TemplatesIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="3" y="3" width="7" height="7" rx="1.3" stroke="currentColor" strokeWidth="1.8" />
+      <rect x="14" y="3" width="7" height="7" rx="1.3" stroke="currentColor" strokeWidth="1.8" />
+      <rect x="3" y="14" width="7" height="7" rx="1.3" stroke="currentColor" strokeWidth="1.8" />
+      <rect x="14" y="14" width="7" height="7" rx="1.3" stroke="currentColor" strokeWidth="1.8" />
+    </svg>
+  );
+}
+
+function StarredIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M12 2.5l2.9 6.4 6.9.7-5.2 4.8 1.5 6.9L12 17.7l-6.1 3.6 1.5-6.9-5.2-4.8 6.9-.7z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function SharedIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2M13 7a4 4 0 11-8 0 4 4 0 018 0zM19 8v6M22 11h-6"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M4 7h16M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2m2 0-1 13a1 1 0 01-1 1H8a1 1 0 01-1-1L6 7"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" />
+      <path d="M21 21l-4.3-4.3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function SortIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M3 7h18M6 12h12M10 17h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function GridIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="3" y="3" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="2" />
+      <rect x="13" y="3" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="2" />
+      <rect x="3" y="13" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="2" />
+      <rect x="13" y="13" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function ListIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function KebabIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="5" cy="12" r="1.6" fill="currentColor" />
+      <circle cx="12" cy="12" r="1.6" fill="currentColor" />
+      <circle cx="19" cy="12" r="1.6" fill="currentColor" />
+    </svg>
+  );
+}
+
+type Nav = "home" | "recent" | "shared";
+type SortBy = "edited" | "name";
+
+const NAV_LABELS: Record<Nav, string> = {
+  home: "Home",
+  recent: "Recent",
+  shared: "Shared with me",
 };
 
-const EMPTY_MESSAGES: Record<ViewFilter, string> = {
-  all: "No boards yet — create one to get started.",
-  owned: "No boards yet — create one to get started.",
+const EMPTY_MESSAGES: Record<Nav, string> = {
+  home: "No boards yet — create one to get started.",
+  recent: "No boards yet — create one to get started.",
   shared: "Nothing shared with you yet.",
 };
 
-export default function Dashboard({ onOpenBoard }: DashboardProps) {
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  const chars = parts.length > 1 ? [parts[0][0], parts[parts.length - 1][0]] : [parts[0]?.[0] ?? "?"];
+  return chars.join("").toUpperCase();
+}
+
+export default function Dashboard({ me, onOpenBoard, onLogout }: DashboardProps) {
   const [boards, setBoards] = useState<BoardSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<ViewFilter>("all");
+  const [nav, setNav] = useState<Nav>("home");
+  const [sortBy, setSortBy] = useState<SortBy>("edited");
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
 
   useEffect(() => {
     listBoards()
@@ -166,52 +199,183 @@ export default function Dashboard({ onOpenBoard }: DashboardProps) {
     setBoards((prev) => prev.filter((b) => b.id !== boardId));
   }
 
-  const visible = boards.filter((b) => {
-    if (view === "owned") return b.role === "owner";
-    if (view === "shared") return b.role !== "owner";
-    return true;
-  });
+  function selectNav(next: Nav) {
+    setNav(next);
+    setProfileMenuOpen(false);
+  }
+
+  const filtered = boards.filter((b) => (nav === "shared" ? b.role !== "owner" : true));
+  const sorted = [...filtered].sort((a, b) =>
+    sortBy === "name" ? a.title.localeCompare(b.title) : +new Date(b.updatedAt) - +new Date(a.updatedAt)
+  );
 
   return (
-    <div className="dashboard">
-      <header className="dashboard-header">
-        <h1>Whiteboard</h1>
-        <button type="button" onClick={handleCreate}>
-          + New board
-        </button>
-      </header>
-
-      <div className="dashboard-view-select">
-        <label htmlFor="board-view">Showing</label>
-        <select id="board-view" value={view} onChange={(e) => setView(e.target.value as ViewFilter)}>
-          {(Object.keys(VIEW_LABELS) as ViewFilter[]).map((key) => (
-            <option key={key} value={key}>
-              {VIEW_LABELS[key]}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {loading ? (
-        <p>Loading...</p>
-      ) : visible.length === 0 ? (
-        <p className="dashboard-empty">{EMPTY_MESSAGES[view]}</p>
-      ) : (
-        // ponytail: fixed 3-per-row for now. Zoom-responsive column count
-        // (more columns as you zoom out, fewer as you zoom in) is a planned
-        // follow-up, not implemented yet.
-        <div className="board-grid">
-          {visible.map((board) => (
-            <BoardCard
-              key={board.id}
-              board={board}
-              onOpenBoard={onOpenBoard}
-              onRenamed={handleRenamed}
-              onDeleted={handleDeleted}
-            />
-          ))}
+    <div className="dash">
+      <aside className="dash-sidebar">
+        <div className="dash-brand">
+          <div className="dash-logomark">
+            <span />
+            <span />
+          </div>
+          <span className="dash-brand-name">Whiteboard</span>
         </div>
-      )}
+
+        <div className="dash-search" title="Not built yet">
+          <SearchIcon />
+          <span>Search boards...</span>
+        </div>
+
+        <button type="button" className="dash-new-board" onClick={handleCreate}>
+          <PlusIcon /> New board
+        </button>
+
+        <nav className="dash-nav">
+          <button
+            type="button"
+            className={`dash-nav-item ${nav === "home" ? "dash-nav-item-active" : ""}`}
+            onClick={() => selectNav("home")}
+          >
+            <HomeIcon />
+            <span>Home</span>
+          </button>
+          <button
+            type="button"
+            className={`dash-nav-item ${nav === "recent" ? "dash-nav-item-active" : ""}`}
+            onClick={() => selectNav("recent")}
+          >
+            <RecentIcon />
+            <span>Recent</span>
+          </button>
+          <button type="button" className="dash-nav-item" disabled title="Not built yet">
+            <TemplatesIcon />
+            <span>Templates</span>
+          </button>
+          <button type="button" className="dash-nav-item" disabled title="Not built yet">
+            <StarredIcon />
+            <span>Starred</span>
+          </button>
+          <button
+            type="button"
+            className={`dash-nav-item ${nav === "shared" ? "dash-nav-item-active" : ""}`}
+            onClick={() => selectNav("shared")}
+          >
+            <SharedIcon />
+            <span>Shared with me</span>
+          </button>
+        </nav>
+
+        <div className="dash-sidebar-spacer" />
+
+        <button type="button" className="dash-nav-item" disabled title="Not built yet">
+          <TrashIcon />
+          <span>Trash</span>
+        </button>
+
+        <div className="dash-profile-wrap">
+          <button type="button" className="dash-profile" onClick={() => setProfileMenuOpen((p) => !p)}>
+            <span className="dash-avatar">{initials(me.name)}</span>
+            <span className="dash-profile-text">
+              <span className="dash-profile-name">{me.name}</span>
+              <span className="dash-profile-email">{me.email}</span>
+            </span>
+            <KebabIcon />
+          </button>
+          {profileMenuOpen && (
+            <>
+              <div className="dash-menu-backdrop" onClick={() => setProfileMenuOpen(false)} />
+              <div className="dash-profile-menu">
+                <button type="button" disabled title="Not built yet">
+                  Settings
+                </button>
+                <div className="board-card-menu-divider" />
+                <button type="button" className="board-card-menu-danger" onClick={onLogout}>
+                  Log out
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </aside>
+
+      <main className="dash-main">
+        <div className="dash-topbar">
+          <h1>{NAV_LABELS[nav]}</h1>
+          <span className="dash-count">
+            {!loading && `${sorted.length} board${sorted.length === 1 ? "" : "s"}`}
+          </span>
+
+          <div className="dash-topbar-spacer" />
+
+          <div className="dash-sort-wrap">
+            <button type="button" className="dash-sort-trigger" onClick={() => setSortMenuOpen((s) => !s)}>
+              <SortIcon />
+              {sortBy === "name" ? "Alphabetical" : "Last edited"}
+              <ChevronDownIcon />
+            </button>
+            {sortMenuOpen && (
+              <>
+                <div className="dash-menu-backdrop" onClick={() => setSortMenuOpen(false)} />
+                <div className="dash-sort-menu">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSortBy("edited");
+                      setSortMenuOpen(false);
+                    }}
+                  >
+                    Last edited
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSortBy("name");
+                      setSortMenuOpen(false);
+                    }}
+                  >
+                    Alphabetical
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="dash-view-toggle">
+            <button type="button" className="dash-view-btn dash-view-btn-active" title="Grid view">
+              <GridIcon />
+            </button>
+            <button type="button" className="dash-view-btn" disabled title="Not built yet">
+              <ListIcon />
+            </button>
+          </div>
+        </div>
+
+        <div className="dash-content">
+          {loading ? (
+            <p className="dashboard-empty">Loading...</p>
+          ) : (
+            <div className="board-grid">
+              {nav === "home" && (
+                <button type="button" className="board-create-card" onClick={handleCreate}>
+                  <PlusIcon />
+                  <span>Blank board</span>
+                </button>
+              )}
+              {sorted.map((board) => (
+                <BoardCard
+                  key={board.id}
+                  board={board}
+                  onOpenBoard={onOpenBoard}
+                  onRenamed={handleRenamed}
+                  onDeleted={handleDeleted}
+                />
+              ))}
+            </div>
+          )}
+          {!loading && sorted.length === 0 && nav !== "home" && (
+            <p className="dashboard-empty">{EMPTY_MESSAGES[nav]}</p>
+          )}
+        </div>
+      </main>
     </div>
   );
 }

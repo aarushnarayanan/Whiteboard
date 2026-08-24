@@ -2,3 +2,4 @@ node_modules
 dist
 .env
 *.log
+docs/design_handoff_whiteboard_redesign/
