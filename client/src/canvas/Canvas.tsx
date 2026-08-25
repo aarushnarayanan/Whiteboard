@@ -72,22 +72,35 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   useEffect(() => {
     if (!canEdit) return;
     function handleKeyDown(e: KeyboardEvent) {
-      // While actively editing text, let the browser's native contentEditable
-      // undo handle character-level edits instead of hijacking it for shapes.
-      if (editingId) return;
-      if (!(e.metaKey || e.ctrlKey)) return;
-      const key = e.key.toLowerCase();
-      if (key === "z") {
+      // Skip whenever an editable field is focused — our own text-edit overlay,
+      // the board title rename input, the share popover's email field, etc. —
+      // so their native typing/undo/backspace behavior isn't hijacked here.
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable)) {
+        return;
+      }
+
+      if (e.metaKey || e.ctrlKey) {
+        const key = e.key.toLowerCase();
+        if (key === "z") {
+          e.preventDefault();
+          undo();
+        } else if (key === "y") {
+          e.preventDefault();
+          redo();
+        }
+        return;
+      }
+
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
         e.preventDefault();
-        undo();
-      } else if (key === "y") {
-        e.preventDefault();
-        redo();
+        removeShape(selectedId);
+        setSelectedId(null);
       }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [canEdit, editingId, undo, redo]);
+  }, [canEdit, selectedId, undo, redo, removeShape]);
 
   useEffect(() => {
     const tr = transformerRef.current;
