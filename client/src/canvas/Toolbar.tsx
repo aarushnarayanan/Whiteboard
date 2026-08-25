@@ -1,4 +1,4 @@
-import type { ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 import type { Tool } from "./types";
 
 interface ToolbarProps {
@@ -6,43 +6,280 @@ interface ToolbarProps {
   onChange: (tool: Tool) => void;
 }
 
-const TOOLS: { id: Tool; label: string; icon: ReactElement }[] = [
-  {
-    id: "select",
-    label: "Select",
-    icon: (
-      <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <path d="M4 3l12 6-5 1.5L9 16 4 3z" strokeLinejoin="round" />
-      </svg>
-    ),
-  },
-  {
-    id: "rect",
-    label: "Rectangle",
-    icon: <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="4" width="14" height="12" rx="1" /></svg>,
-  },
-  {
-    id: "ellipse",
-    label: "Ellipse",
-    icon: <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5"><ellipse cx="10" cy="10" rx="7" ry="6" /></svg>,
-  },
+function SelectIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5 3l14 8-6 2-2 6z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function PenIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M4 20l4-1 11-11-3-3L5 16l-1 4z"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+      <path d="M14 6l3 3" stroke="currentColor" strokeWidth="1.7" />
+    </svg>
+  );
+}
+
+function EraserIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M3 17l8-8 6 6-5 5H6z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+      <path d="M11 9l5-5 6 6-5 5" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ShapesIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="3" y="9" width="9" height="9" rx="1.3" stroke="currentColor" strokeWidth="1.7" />
+      <circle cx="16.5" cy="7.5" r="4.2" stroke="currentColor" strokeWidth="1.7" />
+    </svg>
+  );
+}
+
+function RectIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="4" y="4" width="16" height="16" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+    </svg>
+  );
+}
+
+function EllipseIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" />
+    </svg>
+  );
+}
+
+function LineIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M4 20L20 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ArrowIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M5 19L19 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M9 5h10v10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function StarIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M12 3l2.9 6.4 6.9.7-5.2 4.8 1.5 6.9L12 17.7l-6.1 3.6 1.5-6.9-5.2-4.8 6.9-.7z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function HexagonIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M12 3l7.8 5.7-3 8.6H7.2l-3-8.6z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function StickyIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M4 4h13l3 3v13H4z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+      <path d="M17 4v3h3" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function TableIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="1.5" stroke="currentColor" strokeWidth="1.7" />
+      <path d="M3 10h18M3 15h18M9 4v16M15 4v16" stroke="currentColor" strokeWidth="1.4" />
+    </svg>
+  );
+}
+
+function FrameIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M8 3v4M3 8h4M16 3v4M20 8h-4M8 21v-4M3 16h4M16 21v-4M20 16h-4"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function ImageIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" strokeWidth="1.7" />
+      <circle cx="8.5" cy="9.5" r="1.6" stroke="currentColor" strokeWidth="1.5" />
+      <path
+        d="M4 17l5-5 3 3 4-5 4 5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function CommentIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M4 5h16v11H10l-4 4v-4H4z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function UndoIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M7 5L3 9l4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M3 9h11a6 6 0 010 12h-3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function RedoIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M17 5l4 4-4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M21 9H10a6 6 0 100 12h3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+const SHAPE_ITEMS: { label: string; icon: ReactElement; tool?: "rect" | "ellipse" }[] = [
+  { label: "Rectangle", icon: <RectIcon />, tool: "rect" },
+  { label: "Ellipse", icon: <EllipseIcon />, tool: "ellipse" },
+  { label: "Line", icon: <LineIcon /> },
+  { label: "Arrow", icon: <ArrowIcon /> },
+  { label: "Star", icon: <StarIcon /> },
+  { label: "Hexagon", icon: <HexagonIcon /> },
 ];
 
 export default function Toolbar({ tool, onChange }: ToolbarProps) {
+  const [shapesOpen, setShapesOpen] = useState(false);
+  const isShapeTool = tool === "rect" || tool === "ellipse";
+
+  function selectTool(t: Tool) {
+    onChange(t);
+    setShapesOpen(false);
+  }
+
   return (
     <div className="toolbar" role="toolbar" aria-label="Drawing tools">
-      {TOOLS.map((t) => (
+      <button
+        type="button"
+        className="toolbar-button"
+        aria-pressed={tool === "select"}
+        title="Select"
+        onClick={() => selectTool("select")}
+      >
+        <SelectIcon />
+      </button>
+      <button type="button" className="toolbar-button" disabled title="Not built yet">
+        <PenIcon />
+      </button>
+      <button type="button" className="toolbar-button" disabled title="Not built yet">
+        <EraserIcon />
+      </button>
+
+      <div className="toolbar-divider" />
+
+      <div className="toolbar-flyout-wrap">
         <button
-          key={t.id}
           type="button"
           className="toolbar-button"
-          aria-pressed={tool === t.id}
-          title={t.label}
-          onClick={() => onChange(t.id)}
+          aria-pressed={isShapeTool}
+          title="Shapes"
+          onClick={() => setShapesOpen((s) => !s)}
         >
-          {t.icon}
+          <ShapesIcon />
         </button>
-      ))}
+        {shapesOpen && (
+          <>
+            <div className="toolbar-flyout-backdrop" onClick={() => setShapesOpen(false)} />
+            <div className="toolbar-flyout">
+              {SHAPE_ITEMS.map((item) => (
+                <button
+                  key={item.label}
+                  type="button"
+                  className="toolbar-flyout-button"
+                  disabled={!item.tool}
+                  title={item.tool ? item.label : "Not built yet"}
+                  aria-pressed={!!item.tool && item.tool === tool}
+                  onClick={() => item.tool && selectTool(item.tool)}
+                >
+                  {item.icon}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      <button type="button" className="toolbar-button" disabled title="Not built yet">
+        <ArrowIcon />
+      </button>
+      <button
+        type="button"
+        className="toolbar-button"
+        aria-pressed={tool === "text"}
+        title="Text"
+        onClick={() => selectTool("text")}
+      >
+        <span className="toolbar-text-glyph">T</span>
+      </button>
+      <button type="button" className="toolbar-button" disabled title="Not built yet">
+        <StickyIcon />
+      </button>
+      <button type="button" className="toolbar-button" disabled title="Not built yet">
+        <TableIcon />
+      </button>
+      <button type="button" className="toolbar-button" disabled title="Not built yet">
+        <FrameIcon />
+      </button>
+      <button type="button" className="toolbar-button" disabled title="Not built yet">
+        <ImageIcon />
+      </button>
+      <button type="button" className="toolbar-button" disabled title="Not built yet">
+        <CommentIcon />
+      </button>
+
+      <div className="toolbar-divider" />
+
+      <button type="button" className="toolbar-button" disabled title="Not built yet">
+        <UndoIcon />
+      </button>
+      <button type="button" className="toolbar-button" disabled title="Not built yet">
+        <RedoIcon />
+      </button>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import Canvas, { type CanvasHandle } from "./canvas/Canvas";
 import Toolbar from "./canvas/Toolbar";
+import BoardHeader from "./canvas/BoardHeader";
 import type { Tool } from "./canvas/types";
 import LoginForm from "./auth/LoginForm";
 import Dashboard from "./dashboard/Dashboard";
@@ -50,19 +51,22 @@ function App() {
 
   return (
     <div className="app">
-      <div className="board-toolbar-row">
-        <button type="button" onClick={handleBack}>
-          ← Boards
-        </button>
+      <BoardHeader
+        board={openBoard}
+        onBack={handleBack}
+        onRenamed={(title) => setOpenBoard((b) => (b ? { ...b, title } : b))}
+        onDeleted={() => setOpenBoard(null)}
+      />
+      <div className="board-canvas-area">
+        <Canvas
+          ref={canvasRef}
+          boardId={openBoard.id}
+          role={openBoard.role}
+          tool={tool}
+          onToolUsed={() => setTool("select")}
+        />
         {canEdit && <Toolbar tool={tool} onChange={setTool} />}
       </div>
-      <Canvas
-        ref={canvasRef}
-        boardId={openBoard.id}
-        role={openBoard.role}
-        tool={tool}
-        onToolUsed={() => setTool("select")}
-      />
     </div>
   );
 }

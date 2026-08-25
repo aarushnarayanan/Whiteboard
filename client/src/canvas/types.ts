@@ -1,6 +1,6 @@
-export type Tool = "select" | "rect" | "ellipse";
+export type Tool = "select" | "rect" | "ellipse" | "text";
 
-export type ShapeType = "rect" | "ellipse";
+export type ShapeType = "rect" | "ellipse" | "text";
 
 export interface ShapeObj {
   id: string;
@@ -9,4 +9,6 @@ export interface ShapeObj {
   y: number;
   width: number;
   height: number;
+  text?: string;
+  fontSize?: number;
 }
