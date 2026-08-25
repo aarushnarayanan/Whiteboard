@@ -10,6 +10,9 @@ export function useBoardDoc(boardId: string) {
   }
 
   const [shapes, setShapes] = useState<ShapeObj[]>([]);
+  const undoManagerRef = useRef<Y.UndoManager | undefined>(undefined);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
 
   useEffect(() => {
     const doc = docRef.current!;
@@ -33,8 +36,26 @@ export function useBoardDoc(boardId: string) {
     shapesMap.observeDeep(syncShapes);
     syncShapes();
 
+    // Scoped to shapesMap so only local edits are tracked (Yjs's default
+    // trackedOrigins is [null], which is the origin of our own transactions —
+    // remote updates arrive with the provider as origin and are ignored),
+    // giving per-user undo without any extra bookkeeping.
+    const undoManager = new Y.UndoManager(shapesMap);
+    undoManagerRef.current = undoManager;
+    function syncHistory() {
+      setCanUndo(undoManager.undoStack.length > 0);
+      setCanRedo(undoManager.redoStack.length > 0);
+    }
+    undoManager.on("stack-item-added", syncHistory);
+    undoManager.on("stack-item-popped", syncHistory);
+    syncHistory();
+
     return () => {
       shapesMap.unobserveDeep(syncShapes);
+      undoManager.off("stack-item-added", syncHistory);
+      undoManager.off("stack-item-popped", syncHistory);
+      undoManager.destroy();
+      undoManagerRef.current = undefined;
       provider.destroy();
     };
   }, [boardId]);
@@ -65,5 +86,13 @@ export function useBoardDoc(boardId: string) {
     return entry ? (entry.toJSON() as ShapeObj) : undefined;
   }
 
-  return { shapes, upsertShape, removeShape, getShape };
+  function undo() {
+    undoManagerRef.current?.undo();
+  }
+
+  function redo() {
+    undoManagerRef.current?.redo();
+  }
+
+  return { shapes, upsertShape, removeShape, getShape, undo, redo, canUndo, canRedo };
 }

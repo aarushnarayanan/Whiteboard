@@ -4,6 +4,10 @@ import type { Tool } from "./types";
 interface ToolbarProps {
   tool: Tool;
   onChange: (tool: Tool) => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
 }
 
 function SelectIcon() {
@@ -183,7 +187,7 @@ const SHAPE_ITEMS: { label: string; icon: ReactElement; tool?: "rect" | "ellipse
   { label: "Hexagon", icon: <HexagonIcon /> },
 ];
 
-export default function Toolbar({ tool, onChange }: ToolbarProps) {
+export default function Toolbar({ tool, onChange, canUndo, canRedo, onUndo, onRedo }: ToolbarProps) {
   const [shapesOpen, setShapesOpen] = useState(false);
   const isShapeTool = tool === "rect" || tool === "ellipse";
 
@@ -274,10 +278,16 @@ export default function Toolbar({ tool, onChange }: ToolbarProps) {
 
       <div className="toolbar-divider" />
 
-      <button type="button" className="toolbar-button" disabled title="Not built yet">
+      <button type="button" className="toolbar-button" disabled={!canUndo} title="Undo (Cmd/Ctrl+Z)" onClick={onUndo}>
         <UndoIcon />
       </button>
-      <button type="button" className="toolbar-button" disabled title="Not built yet">
+      <button
+        type="button"
+        className="toolbar-button"
+        disabled={!canRedo}
+        title="Redo (Cmd/Ctrl+Y)"
+        onClick={onRedo}
+      >
         <RedoIcon />
       </button>
     </div>

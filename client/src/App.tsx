@@ -14,6 +14,7 @@ function App() {
   const [me, setMe] = useState<Me | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [openBoard, setOpenBoard] = useState<BoardSummary | null>(null);
+  const [history, setHistory] = useState({ canUndo: false, canRedo: false });
   const canvasRef = useRef<CanvasHandle>(null);
 
   useEffect(() => {
@@ -29,6 +30,7 @@ function App() {
     }
     setOpenBoard(null);
     setTool("select");
+    setHistory({ canUndo: false, canRedo: false });
   }
 
   async function handleLogout() {
@@ -64,8 +66,18 @@ function App() {
           role={openBoard.role}
           tool={tool}
           onToolUsed={() => setTool("select")}
+          onHistoryChange={setHistory}
         />
-        {canEdit && <Toolbar tool={tool} onChange={setTool} />}
+        {canEdit && (
+          <Toolbar
+            tool={tool}
+            onChange={setTool}
+            canUndo={history.canUndo}
+            canRedo={history.canRedo}
+            onUndo={() => canvasRef.current?.undo()}
+            onRedo={() => canvasRef.current?.redo()}
+          />
+        )}
       </div>
     </div>
   );

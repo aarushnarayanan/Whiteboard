@@ -17,6 +17,8 @@ export type BoardRole = "owner" | "editor" | "viewer";
 export interface CanvasHandle {
   /** A small snapshot of the current canvas, or null if the stage isn't mounted. */
   captureThumbnail: () => string | null;
+  undo: () => void;
+  redo: () => void;
 }
 
 interface CanvasProps {
@@ -24,9 +26,13 @@ interface CanvasProps {
   role: BoardRole;
   tool: Tool;
   onToolUsed: () => void;
+  onHistoryChange: (state: { canUndo: boolean; canRedo: boolean }) => void;
 }
 
-const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({ boardId, role, tool, onToolUsed }, ref) {
+const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
+  { boardId, role, tool, onToolUsed, onHistoryChange },
+  ref
+) {
   const canEdit = role !== "viewer";
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -34,7 +40,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({ boardId, 
   const shapeRefs = useRef(new Map<string, Konva.Node>());
 
   const [size, setSize] = useState({ width: 0, height: 0 });
-  const { shapes, upsertShape, removeShape, getShape } = useBoardDoc(boardId);
+  const { shapes, upsertShape, removeShape, getShape, undo, redo, canUndo, canRedo } = useBoardDoc(boardId);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [scale, setScale] = useState(1);
@@ -44,6 +50,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({ boardId, 
 
   useImperativeHandle(ref, () => ({
     captureThumbnail: () => stageRef.current?.toDataURL({ pixelRatio: 0.5 }) ?? null,
+    undo,
+    redo,
   }));
 
   useEffect(() => {
@@ -56,6 +64,30 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas({ boardId, 
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    onHistoryChange({ canUndo, canRedo });
+  }, [canUndo, canRedo, onHistoryChange]);
+
+  useEffect(() => {
+    if (!canEdit) return;
+    function handleKeyDown(e: KeyboardEvent) {
+      // While actively editing text, let the browser's native contentEditable
+      // undo handle character-level edits instead of hijacking it for shapes.
+      if (editingId) return;
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const key = e.key.toLowerCase();
+      if (key === "z") {
+        e.preventDefault();
+        undo();
+      } else if (key === "y") {
+        e.preventDefault();
+        redo();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [canEdit, editingId, undo, redo]);
 
   useEffect(() => {
     const tr = transformerRef.current;
