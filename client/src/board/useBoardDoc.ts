@@ -13,6 +13,11 @@ export function useBoardDoc(boardId: string) {
   const undoManagerRef = useRef<Y.UndoManager | undefined>(undefined);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
+  // Exposed so callers can reach `.awareness` for cursor/presence — set
+  // synchronously in this effect, read by effects declared after this hook
+  // call returns (they run later in the same commit), so it's never stale
+  // by the time anything reads it.
+  const providerRef = useRef<WebsocketProvider | undefined>(undefined);
 
   useEffect(() => {
     const doc = docRef.current!;
@@ -26,6 +31,7 @@ export function useBoardDoc(boardId: string) {
     const provider = new WebsocketProvider(serverUrl, boardId, doc, {
       connect: true,
     });
+    providerRef.current = provider;
 
     function syncShapes() {
       const next: ShapeObj[] = [];
@@ -57,6 +63,7 @@ export function useBoardDoc(boardId: string) {
       undoManager.destroy();
       undoManagerRef.current = undefined;
       provider.destroy();
+      providerRef.current = undefined;
     };
   }, [boardId]);
 
@@ -94,5 +101,5 @@ export function useBoardDoc(boardId: string) {
     undoManagerRef.current?.redo();
   }
 
-  return { shapes, upsertShape, removeShape, getShape, undo, redo, canUndo, canRedo };
+  return { shapes, upsertShape, removeShape, getShape, undo, redo, canUndo, canRedo, providerRef };
 }

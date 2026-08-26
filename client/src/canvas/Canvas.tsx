@@ -1,9 +1,10 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { Stage, Layer, Rect, Ellipse, Text, Transformer } from "react-konva";
+import { Stage, Layer, Rect, Ellipse, Text, Transformer, Group, Path } from "react-konva";
 import type Konva from "konva";
 import type { KonvaEventObject } from "konva/lib/Node";
 import type { Tool } from "./types";
 import { useBoardDoc } from "../board/useBoardDoc";
+import type { Me } from "../api/auth";
 
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 4;
@@ -11,6 +12,28 @@ const DEFAULT_FONT_SIZE = 18;
 const MIN_TEXT_WIDTH = 120;
 const MIN_TEXT_HEIGHT = 32;
 const TEXT_FONT_FAMILY = "system-ui, -apple-system, sans-serif";
+const CURSOR_THROTTLE_MS = 50;
+const CURSOR_COLORS = [
+  "oklch(60% 0.19 25)",
+  "oklch(60% 0.17 145)",
+  "oklch(58% 0.19 280)",
+  "oklch(65% 0.18 60)",
+  "oklch(60% 0.19 330)",
+  "oklch(60% 0.15 200)",
+];
+
+function cursorColor(id: string): string {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return CURSOR_COLORS[h % CURSOR_COLORS.length];
+}
+
+interface RemoteCursor {
+  name: string;
+  color: string;
+  x: number;
+  y: number;
+}
 
 export type BoardRole = "owner" | "editor" | "viewer";
 
@@ -27,10 +50,11 @@ interface CanvasProps {
   tool: Tool;
   onToolUsed: () => void;
   onHistoryChange: (state: { canUndo: boolean; canRedo: boolean }) => void;
+  me: Me;
 }
 
 const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
-  { boardId, role, tool, onToolUsed, onHistoryChange },
+  { boardId, role, tool, onToolUsed, onHistoryChange, me },
   ref
 ) {
   const canEdit = role !== "viewer";
@@ -40,13 +64,16 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const shapeRefs = useRef(new Map<string, Konva.Node>());
 
   const [size, setSize] = useState({ width: 0, height: 0 });
-  const { shapes, upsertShape, removeShape, getShape, undo, redo, canUndo, canRedo } = useBoardDoc(boardId);
+  const { shapes, upsertShape, removeShape, getShape, undo, redo, canUndo, canRedo, providerRef } =
+    useBoardDoc(boardId);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [scale, setScale] = useState(1);
   const drawingId = useRef<string | null>(null);
   const drawStart = useRef({ x: 0, y: 0 });
   const textEditRef = useRef<HTMLDivElement>(null);
+  const [remoteCursors, setRemoteCursors] = useState<Map<number, RemoteCursor>>(new Map());
+  const lastCursorSent = useRef(0);
 
   useImperativeHandle(ref, () => ({
     captureThumbnail: () => stageRef.current?.toDataURL({ pixelRatio: 0.5 }) ?? null,
@@ -68,6 +95,32 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   useEffect(() => {
     onHistoryChange({ canUndo, canRedo });
   }, [canUndo, canRedo, onHistoryChange]);
+
+  useEffect(() => {
+    const awareness = providerRef.current?.awareness;
+    if (!awareness) return;
+
+    awareness.setLocalStateField("user", { name: me.name, color: cursorColor(me.id) });
+
+    function syncCursors() {
+      const next = new Map<number, RemoteCursor>();
+      awareness!.getStates().forEach((state, clientId) => {
+        if (clientId === awareness!.clientID) return;
+        const user = state.user as { name: string; color: string } | undefined;
+        const cursor = state.cursor as { x: number; y: number } | null | undefined;
+        if (!user || !cursor) return;
+        next.set(clientId, { name: user.name, color: user.color, x: cursor.x, y: cursor.y });
+      });
+      setRemoteCursors(next);
+    }
+
+    awareness.on("change", syncCursors);
+    syncCursors();
+    return () => {
+      awareness.off("change", syncCursors);
+      awareness.setLocalStateField("cursor", null);
+    };
+  }, [providerRef, me.id, me.name]);
 
   useEffect(() => {
     if (!canEdit) return;
@@ -226,11 +279,18 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   }
 
   function handleStageMouseMove() {
-    const id = drawingId.current;
     const stage = stageRef.current;
-    if (!id || !stage) return;
-
+    if (!stage) return;
     const point = toStagePoint(stage);
+
+    const now = Date.now();
+    if (now - lastCursorSent.current > CURSOR_THROTTLE_MS) {
+      lastCursorSent.current = now;
+      providerRef.current?.awareness.setLocalStateField("cursor", point);
+    }
+
+    const id = drawingId.current;
+    if (!id) return;
     const start = drawStart.current;
     const current = shapes.find((s) => s.id === id);
     if (!current) return;
@@ -241,6 +301,10 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       width: Math.abs(point.x - start.x),
       height: Math.abs(point.y - start.y),
     });
+  }
+
+  function handleStageMouseLeave() {
+    providerRef.current?.awareness.setLocalStateField("cursor", null);
   }
 
   function handleStageMouseUp() {
@@ -274,7 +338,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   }
 
   return (
-    <div ref={containerRef} className="canvas-container">
+    <div ref={containerRef} className="canvas-container" onMouseLeave={handleStageMouseLeave}>
       <Stage
         ref={stageRef}
         width={size.width}
@@ -414,6 +478,26 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             );
           })}
           {canEdit && <Transformer ref={transformerRef} rotateEnabled={false} />}
+
+          {Array.from(remoteCursors.entries()).map(([clientId, cursor]) => (
+            <Group key={clientId} x={cursor.x} y={cursor.y} scaleX={1 / scale} scaleY={1 / scale} listening={false}>
+              <Path
+                data="M0 0 L0 16 L4.5 12.5 L7.5 18.5 L10 17.3 L7 11.5 L12 11.5 Z"
+                fill={cursor.color}
+                stroke="white"
+                strokeWidth={1}
+              />
+              <Text
+                x={14}
+                y={2}
+                text={cursor.name}
+                fontSize={12}
+                fontFamily={TEXT_FONT_FAMILY}
+                fontStyle="bold"
+                fill={cursor.color}
+              />
+            </Group>
+          ))}
         </Layer>
       </Stage>
 

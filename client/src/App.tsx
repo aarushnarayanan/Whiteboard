@@ -67,6 +67,7 @@ function App() {
           tool={tool}
           onToolUsed={() => setTool("select")}
           onHistoryChange={setHistory}
+          me={me}
         />
         {canEdit && (
           <Toolbar
