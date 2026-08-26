@@ -213,4 +213,96 @@ describe("boards routes", () => {
     const listed = await listRes.json();
     expect(listed.find((b: { id: string }) => b.id === board.id)).toBeUndefined();
   });
+
+  it("lists members for anyone on the board but 404s for an outsider", async () => {
+    const ownerCookie = await signupAndGetCookie("boards-test-owner7@example.com");
+    const editorCookie = await signupAndGetCookie("boards-test-editor7@example.com");
+    const outsiderCookie = await signupAndGetCookie("boards-test-outsider7@example.com");
+
+    const createRes = await fetch(`${baseUrl}/boards`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ title: "Team board" }),
+    });
+    const board = await createRes.json();
+
+    await fetch(`${baseUrl}/boards/${board.id}/members`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ email: "boards-test-editor7@example.com", role: "editor" }),
+    });
+
+    const ownerListRes = await fetch(`${baseUrl}/boards/${board.id}/members`, { headers: { cookie: ownerCookie } });
+    expect(ownerListRes.status).toBe(200);
+    const members = await ownerListRes.json();
+    expect(members).toContainEqual(
+      expect.objectContaining({ email: "boards-test-owner7@example.com", role: "owner" }),
+    );
+    expect(members).toContainEqual(
+      expect.objectContaining({ email: "boards-test-editor7@example.com", role: "editor" }),
+    );
+
+    const editorListRes = await fetch(`${baseUrl}/boards/${board.id}/members`, { headers: { cookie: editorCookie } });
+    expect(editorListRes.status).toBe(200);
+
+    const outsiderListRes = await fetch(`${baseUrl}/boards/${board.id}/members`, {
+      headers: { cookie: outsiderCookie },
+    });
+    expect(outsiderListRes.status).toBe(404);
+  });
+
+  it("lets the owner remove a member, rejects a non-owner's attempt, and refuses to remove the owner", async () => {
+    const ownerCookie = await signupAndGetCookie("boards-test-owner8@example.com");
+    const editorCookie = await signupAndGetCookie("boards-test-editor8@example.com");
+    const viewerCookie = await signupAndGetCookie("boards-test-viewer8@example.com");
+
+    const createRes = await fetch(`${baseUrl}/boards`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ title: "Board" }),
+    });
+    const board = await createRes.json();
+
+    await fetch(`${baseUrl}/boards/${board.id}/members`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ email: "boards-test-editor8@example.com", role: "editor" }),
+    });
+    await fetch(`${baseUrl}/boards/${board.id}/members`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ email: "boards-test-viewer8@example.com", role: "viewer" }),
+    });
+
+    const meRes = await fetch(`${baseUrl}/auth/me`, { headers: { cookie: editorCookie } });
+    const editorMe = await meRes.json();
+    const ownerMeRes = await fetch(`${baseUrl}/auth/me`, { headers: { cookie: ownerCookie } });
+    const ownerMe = await ownerMeRes.json();
+
+    const nonOwnerRemoveRes = await fetch(`${baseUrl}/boards/${board.id}/members/${editorMe.id}`, {
+      method: "DELETE",
+      headers: { cookie: viewerCookie },
+    });
+    expect(nonOwnerRemoveRes.status).toBe(403);
+
+    const removeOwnerRes = await fetch(`${baseUrl}/boards/${board.id}/members/${ownerMe.id}`, {
+      method: "DELETE",
+      headers: { cookie: ownerCookie },
+    });
+    expect(removeOwnerRes.status).toBe(400);
+
+    const removeEditorRes = await fetch(`${baseUrl}/boards/${board.id}/members/${editorMe.id}`, {
+      method: "DELETE",
+      headers: { cookie: ownerCookie },
+    });
+    expect(removeEditorRes.status).toBe(200);
+
+    const editorListAfterRes = await fetch(`${baseUrl}/boards`, { headers: { cookie: editorCookie } });
+    const editorBoardsAfter = await editorListAfterRes.json();
+    expect(editorBoardsAfter.find((b: { id: string }) => b.id === board.id)).toBeUndefined();
+
+    const membersAfterRes = await fetch(`${baseUrl}/boards/${board.id}/members`, { headers: { cookie: ownerCookie } });
+    const membersAfter = await membersAfterRes.json();
+    expect(membersAfter.find((m: { role: string }) => m.role === "editor")).toBeUndefined();
+  });
 });

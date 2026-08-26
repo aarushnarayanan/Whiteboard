@@ -68,3 +68,23 @@ export async function inviteMember(boardId: string, email: string, role: "editor
   });
   await parseJsonOrThrow(res);
 }
+
+export interface BoardMember {
+  userId: string;
+  email: string;
+  name: string;
+  role: BoardRole;
+}
+
+export async function listMembers(boardId: string): Promise<BoardMember[]> {
+  const res = await fetch(`/boards/${boardId}/members`, { credentials: "include" });
+  return (await parseJsonOrThrow(res)) as BoardMember[];
+}
+
+export async function removeMember(boardId: string, userId: string): Promise<void> {
+  const res = await fetch(`/boards/${boardId}/members/${userId}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  await parseJsonOrThrow(res);
+}

@@ -34,6 +34,10 @@ envContent.split("\n").forEach((line) => {
   }
 });
 
+// Force dev-mode email (console-logged, not sent) in tests regardless of what's
+// in .env — tests must not depend on a live external provider or a real API key.
+delete env.EMAIL_API_KEY;
+
 export default defineConfig({
   test: {
     env,

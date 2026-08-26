@@ -1,5 +1,11 @@
 import { useState, type FormEvent } from "react";
-import { login, signup, type Me } from "../api/auth";
+import { forgotPassword, login, resetPassword, signup, type Me } from "../api/auth";
+
+function initialResetToken(): string | null {
+  const token = new URLSearchParams(window.location.search).get("token");
+  if (token) window.history.replaceState(null, "", window.location.pathname);
+  return token;
+}
 
 interface LoginFormProps {
   onAuthed: (me: Me) => void;
@@ -84,7 +90,8 @@ function BrandComposition() {
 }
 
 export default function LoginForm({ onAuthed }: LoginFormProps) {
-  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [resetToken] = useState<string | null>(initialResetToken);
+  const [mode, setMode] = useState<"login" | "signup" | "forgot" | "reset">(resetToken ? "reset" : "login");
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
@@ -92,6 +99,7 @@ export default function LoginForm({ onAuthed }: LoginFormProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [forgotSent, setForgotSent] = useState(false);
 
   const isSignup = mode === "signup";
 
@@ -107,6 +115,40 @@ export default function LoginForm({ onAuthed }: LoginFormProps) {
     setSubmitting(true);
     try {
       const me = isSignup ? await signup(email, name, password) : await login(email, password);
+      onAuthed(me);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "something went wrong");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleForgotSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setSubmitting(true);
+    try {
+      await forgotPassword(email);
+      setForgotSent(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "something went wrong");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleResetSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+
+    if (password !== confirmPassword) {
+      setError("Passwords don't match");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const me = await resetPassword(resetToken!, password);
       onAuthed(me);
     } catch (err) {
       setError(err instanceof Error ? err.message : "something went wrong");
@@ -145,24 +187,111 @@ export default function LoginForm({ onAuthed }: LoginFormProps) {
 
       <div className="auth-form-pane">
         <div className="auth-mode-toggle">
-          {isSignup ? (
+          {mode === "signup" ? (
             <span>
               Already have an account?{" "}
               <a href="#" onClick={(e) => (e.preventDefault(), setMode("login"))}>
                 Log in
               </a>
             </span>
-          ) : (
+          ) : mode === "login" ? (
             <span>
               Don't have an account?{" "}
               <a href="#" onClick={(e) => (e.preventDefault(), setMode("signup"))}>
                 Sign up
               </a>
             </span>
+          ) : (
+            <span>
+              <a
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setError(null);
+                  setMode("login");
+                }}
+              >
+                Back to log in
+              </a>
+            </span>
           )}
         </div>
 
         <div className="auth-form-center">
+        {mode === "forgot" ? (
+          <form className="auth-form" onSubmit={handleForgotSubmit}>
+            <h2 className="auth-form-headline">Reset your password</h2>
+            <p className="auth-form-subtext">Enter your email and we'll send you a link to reset it.</p>
+
+            {error && <p className="auth-error">{error}</p>}
+
+            {forgotSent ? (
+              <p className="auth-form-subtext">
+                If an account exists for <strong>{email}</strong>, we've sent a password reset link to it.
+              </p>
+            ) : (
+              <>
+                <label className="auth-field">
+                  <span className="auth-field-label">Email address</span>
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="you@company.com"
+                    required
+                  />
+                </label>
+                <button type="submit" className="auth-submit" disabled={submitting}>
+                  Send reset link
+                </button>
+              </>
+            )}
+          </form>
+        ) : mode === "reset" ? (
+          <form className="auth-form" onSubmit={handleResetSubmit}>
+            <h2 className="auth-form-headline">Set a new password</h2>
+            <p className="auth-form-subtext">Choose a new password for your account.</p>
+
+            {error && <p className="auth-error">{error}</p>}
+
+            <label className="auth-field">
+              <span className="auth-field-label">New password</span>
+              <div className="auth-password-field">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  minLength={8}
+                  required
+                />
+                <button
+                  type="button"
+                  className="auth-password-toggle"
+                  onClick={() => setShowPassword((s) => !s)}
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                >
+                  {showPassword ? <EyeOffIcon /> : <EyeIcon />}
+                </button>
+              </div>
+            </label>
+
+            <label className="auth-field">
+              <span className="auth-field-label">Confirm new password</span>
+              <input
+                type={showPassword ? "text" : "password"}
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="••••••••"
+                required
+              />
+            </label>
+
+            <button type="submit" className="auth-submit" disabled={submitting}>
+              Reset password
+            </button>
+          </form>
+        ) : (
         <form className="auth-form" onSubmit={handleSubmit}>
           <h2 className="auth-form-headline">{isSignup ? "Create your account" : "Log in to Whiteboard"}</h2>
           <p className="auth-form-subtext">
@@ -204,9 +333,17 @@ export default function LoginForm({ onAuthed }: LoginFormProps) {
             <div className="auth-field-label-row">
               <span className="auth-field-label">Password</span>
               {!isSignup && (
-                <span className="auth-inert-link" title="Not built yet">
+                <a
+                  href="#"
+                  className="auth-forgot-link"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setError(null);
+                    setMode("forgot");
+                  }}
+                >
                   Forgot password?
-                </span>
+                </a>
               )}
             </div>
             <div className="auth-password-field">
@@ -267,6 +404,7 @@ export default function LoginForm({ onAuthed }: LoginFormProps) {
             </p>
           )}
         </form>
+        )}
         </div>
       </div>
     </div>

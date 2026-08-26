@@ -7,11 +7,19 @@ import { hashPassword, verifyPassword } from "./password.js";
 import {
   ACCESS_TOKEN_MAX_AGE_MS,
   REFRESH_TOKEN_MAX_AGE_MS,
+  passwordVersion,
   signAccessToken,
   signRefreshToken,
+  signResetToken,
+  verifyResetToken,
   verifyToken,
 } from "./jwt.js";
 import { getCookie, requireAuth } from "./middleware.js";
+import { sendEmail } from "../email/sendEmail.js";
+
+function appUrl(): string {
+  return process.env.APP_URL || "http://localhost:5173";
+}
 
 export const authRouter = Router();
 
@@ -120,6 +128,70 @@ authRouter.post("/refresh", (req, res) => {
     res.status(401).json({ error: "invalid or expired session" });
   }
 });
+
+authRouter.post(
+  "/forgot-password",
+  asyncHandler(async (req, res) => {
+    const { email } = req.body ?? {};
+    if (typeof email !== "string") {
+      res.status(400).json({ error: "email is required" });
+      return;
+    }
+
+    const [user] = await db.select().from(users).where(eq(users.email, email));
+    // Always 200 regardless of whether the email matched an account — same
+    // no-enumeration posture as /login (no signal for probing which emails exist).
+    if (user?.passwordHash) {
+      const token = signResetToken({ sub: user.id, pwv: passwordVersion(user.passwordHash) });
+      const resetUrl = `${appUrl()}/reset-password?token=${token}`;
+      await sendEmail({
+        to: user.email,
+        subject: "Reset your Whiteboard password",
+        text: `Reset your password: ${resetUrl}\n\nThis link expires in 30 minutes. If you didn't request this, you can ignore this email.`,
+        html: `<p><a href="${resetUrl}">Reset your Whiteboard password</a></p><p>This link expires in 30 minutes. If you didn't request this, you can ignore this email.</p>`,
+      });
+    }
+
+    res.status(200).json({ ok: true });
+  }),
+);
+
+authRouter.post(
+  "/reset-password",
+  asyncHandler(async (req, res) => {
+    const { token, password } = req.body ?? {};
+    if (typeof token !== "string" || typeof password !== "string") {
+      res.status(400).json({ error: "token and password are required" });
+      return;
+    }
+    if (password.length < 8) {
+      res.status(400).json({ error: "password must be at least 8 characters" });
+      return;
+    }
+
+    let payload;
+    try {
+      payload = verifyResetToken(token);
+    } catch {
+      res.status(400).json({ error: "invalid or expired reset link" });
+      return;
+    }
+
+    const [user] = await db.select().from(users).where(eq(users.id, payload.sub));
+    if (!user || !user.passwordHash || passwordVersion(user.passwordHash) !== payload.pwv) {
+      // Either the account is gone, or the password already changed since this
+      // link was issued — the fingerprint mismatch makes the token single-use.
+      res.status(400).json({ error: "invalid or expired reset link" });
+      return;
+    }
+
+    const passwordHash = await hashPassword(password);
+    await db.update(users).set({ passwordHash }).where(eq(users.id, user.id));
+
+    setSessionCookies(res, user.id);
+    res.status(200).json({ id: user.id, email: user.email, name: user.name });
+  }),
+);
 
 authRouter.post("/logout", (_req, res) => {
   res.clearCookie("access_token", COOKIE_OPTS);

@@ -1,5 +1,13 @@
-import { useState, type FormEvent } from "react";
-import { deleteBoard, inviteMember, renameBoard, type BoardSummary } from "../api/boards";
+import { useEffect, useState, type FormEvent } from "react";
+import {
+  deleteBoard,
+  inviteMember,
+  listMembers,
+  removeMember,
+  renameBoard,
+  type BoardMember,
+  type BoardSummary,
+} from "../api/boards";
 
 interface BoardHeaderProps {
   board: BoardSummary;
@@ -82,6 +90,26 @@ export default function BoardHeader({ board, onBack, onRenamed, onDeleted }: Boa
   const [shareEmail, setShareEmail] = useState("");
   const [shareRole, setShareRole] = useState<"editor" | "viewer">("editor");
   const [shareStatus, setShareStatus] = useState<string | null>(null);
+  const [members, setMembers] = useState<BoardMember[] | null>(null);
+  const [membersError, setMembersError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!sharing) return;
+    setMembersError(null);
+    listMembers(board.id)
+      .then(setMembers)
+      .catch((err) => setMembersError(err instanceof Error ? err.message : "couldn't load members"));
+  }, [sharing, board.id]);
+
+  async function handleRemoveMember(userId: string) {
+    try {
+      await removeMember(board.id, userId);
+      setMembers((prev) => prev?.filter((m) => m.userId !== userId) ?? null);
+      setMembersError(null);
+    } catch (err) {
+      setMembersError(err instanceof Error ? err.message : "couldn't remove member");
+    }
+  }
 
   async function saveRename() {
     const title = titleDraft.trim();
@@ -102,6 +130,9 @@ export default function BoardHeader({ board, onBack, onRenamed, onDeleted }: Boa
       await inviteMember(board.id, shareEmail, shareRole);
       setShareStatus(`Shared with ${shareEmail}`);
       setShareEmail("");
+      listMembers(board.id)
+        .then(setMembers)
+        .catch(() => {});
     } catch (err) {
       setShareStatus(err instanceof Error ? err.message : "couldn't share");
     }
@@ -242,6 +273,34 @@ export default function BoardHeader({ board, onBack, onRenamed, onDeleted }: Boa
                 <button type="submit">Invite</button>
               </div>
               {shareStatus && <span className="board-header-share-status">{shareStatus}</span>}
+
+              <div className="board-header-share-members">
+                <span className="board-header-share-members-title">People with access</span>
+                {membersError && <span className="board-header-share-status">{membersError}</span>}
+                {members === null && !membersError ? (
+                  <span className="board-header-share-members-empty">Loading…</span>
+                ) : (
+                  members?.map((member) => (
+                    <div key={member.userId} className="board-header-share-member">
+                      <span className="board-header-share-member-info">
+                        <span className="board-header-share-member-name">{member.name}</span>
+                        <span className="board-header-share-member-email">{member.email}</span>
+                      </span>
+                      <span className="board-header-share-member-role">{member.role}</span>
+                      {member.role !== "owner" && (
+                        <button
+                          type="button"
+                          className="board-header-share-member-remove"
+                          aria-label={`Remove ${member.email}`}
+                          onClick={() => handleRemoveMember(member.userId)}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
             </form>
           </>
         )}

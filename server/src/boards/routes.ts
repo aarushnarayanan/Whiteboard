@@ -156,3 +156,62 @@ boardsRouter.post(
     res.status(200).json({ ok: true });
   }),
 );
+
+boardsRouter.get(
+  "/:id/members",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+
+    const [requesterMembership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!requesterMembership) {
+      res.status(404).json({ error: "board not found" });
+      return;
+    }
+
+    const rows = await db
+      .select({ userId: users.id, email: users.email, name: users.name, role: boardMembers.role })
+      .from(boardMembers)
+      .innerJoin(users, eq(boardMembers.userId, users.id))
+      .where(eq(boardMembers.boardId, boardId));
+
+    res.json(rows);
+  }),
+);
+
+boardsRouter.delete(
+  "/:id/members/:userId",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+    const targetUserId = req.params.userId;
+
+    const [requesterMembership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!requesterMembership || requesterMembership.role !== "owner") {
+      res.status(403).json({ error: "only the owner can remove members" });
+      return;
+    }
+
+    const [targetMembership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, targetUserId), eq(boardMembers.boardId, boardId)));
+    if (!targetMembership) {
+      res.status(404).json({ error: "that person isn't a member of this board" });
+      return;
+    }
+    if (targetMembership.role === "owner") {
+      res.status(400).json({ error: "can't remove the board owner" });
+      return;
+    }
+
+    await db
+      .delete(boardMembers)
+      .where(and(eq(boardMembers.userId, targetUserId), eq(boardMembers.boardId, boardId)));
+    res.status(200).json({ ok: true });
+  }),
+);

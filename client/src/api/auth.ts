@@ -33,6 +33,26 @@ export async function login(email: string, password: string): Promise<Me> {
   return (await parseJsonOrThrow(res)) as Me;
 }
 
+export async function forgotPassword(email: string): Promise<void> {
+  const res = await fetch("/auth/forgot-password", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ email }),
+  });
+  await parseJsonOrThrow(res);
+}
+
+export async function resetPassword(token: string, password: string): Promise<Me> {
+  const res = await fetch("/auth/reset-password", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ token, password }),
+  });
+  return (await parseJsonOrThrow(res)) as Me;
+}
+
 export async function logout(): Promise<void> {
   await fetch("/auth/logout", { method: "POST", credentials: "include" });
 }

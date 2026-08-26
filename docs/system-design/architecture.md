@@ -136,6 +136,8 @@ All routes read directly from `server/src/auth/routes.ts` and `server/src/boards
 | GET | `/auth/me` | cookie | Return `{id, email, name}` for the signed-in user, or 401. |
 | POST | `/auth/refresh` | refresh cookie | Reads `refresh_token` cookie directly (not via `requireAuth`), issues a new `access_token`. **Not rotated** — a `ponytail:` comment in the code flags this as a deliberate simplification. |
 | POST | `/auth/logout` | none | Clears both cookies. |
+| POST | `/auth/forgot-password` | none | Always 200 (same no-enumeration posture as `/login`). If the email matches an account with a password, emails (via `server/src/email/sendEmail.ts`) a link containing a signed, 30-minute reset token. |
+| POST | `/auth/reset-password` | none (token in body) | Verifies the reset token, sets a new password, and signs the caller in (same cookies as signup/login). The token embeds a fingerprint of the *current* password hash (`passwordVersion()` in `jwt.ts`) — it stops verifying the instant the password actually changes, so it's single-use with no separate token table. |
 
 Cookies: `access_token` (15 min TTL) and `refresh_token` (30 day TTL), both `httpOnly`, `sameSite: lax`, `secure` in production. Signed with `JWT_SECRET` (`jsonwebtoken`); payload is just `{ sub: userId }`.
 
@@ -149,8 +151,10 @@ Cookies: `access_token` (15 min TTL) and `refresh_token` (30 day TTL), both `htt
 | PATCH | `/boards/:id` | editor or owner (403 for viewer) | Rename a board. |
 | DELETE | `/boards/:id` | owner only (403 otherwise) | Delete a board; cascades clean up members/updates/snapshot. |
 | POST | `/boards/:id/members` | owner only | Add or update a member's role by email. **Requires the invitee already have an account** — 404 if no user matches that email. No email is sent. |
+| GET | `/boards/:id/members` | any member (404 if the caller isn't one) | List members (`userId`, `email`, `name`, `role`) via an inner join on `users`. |
+| DELETE | `/boards/:id/members/:userId` | owner only (403 otherwise) | Remove a member. 400 if the target is the board's `owner` — a board is never left without one; there's no ownership-transfer path yet. |
 
-**Explicitly does not exist:** `GET /boards/:id/members` (list members) and `DELETE /boards/:id/members/:userId` (remove a member) — confirmed absent from the router. The client has no way to see or remove collaborators once added.
+**Known gap:** removing a member doesn't force-disconnect an already-open WebSocket for that user — `roleStub.ts` resolves role once at connection time (see §5) and sockets aren't tracked per-user, only per-board, so an already-connected collaborator keeps syncing until their next reconnect/refresh rather than being kicked instantly.
 
 ## 5. WebSocket / Real-Time Sync Protocol
 
@@ -200,10 +204,10 @@ flowchart TD
 ```
 
 - **`App.tsx`** is the single top-level state machine: `checkingSession` (calls `api/auth.ts#me()` once on mount) → `me === null` renders `LoginForm` → `me` set and no `openBoard` renders `Dashboard` → `openBoard` set renders `BoardHeader` + `Canvas` + (`Toolbar` if the role can edit). `handleBack` captures a canvas thumbnail (`Canvas`'s imperative `captureThumbnail`) and uploads it via `api/boards.ts#uploadThumbnail` before returning to the dashboard — this is why leaving a board updates its dashboard card image.
-- **`auth/LoginForm.tsx`** — real email/password login and signup (toggled by local `mode` state), calling `api/auth.ts`. The "Continue with Google" button is rendered `disabled` — no OAuth flow is wired up client or server side.
+- **`auth/LoginForm.tsx`** — real email/password login and signup, plus forgot/reset-password, all as local `mode` states (`"login" | "signup" | "forgot" | "reset"`) in one component, calling `api/auth.ts`. A reset link's `?token=...` query param is read on mount (then stripped from the URL via `history.replaceState`) to drop straight into `"reset"` mode — there's no router, this is the app's only URL-driven state. The "Continue with Google" button is rendered `disabled` — no OAuth flow is wired up client or server side (the `google_id` column exists in the schema and sits unused, ready for it).
 - **`dashboard/Dashboard.tsx`** — sidebar (brand mark, disabled search, real "New board" button, Home/Recent/Shared nav — all backed by client-side filter/sort over one `listBoards()` call — plus disabled Templates/Starred/Trash nav items) and a top bar (real sort toggle Last-edited/Alphabetical, a grid/list view toggle where only grid is functional). Renders one `BoardCard` per board.
 - **`dashboard/BoardCard.tsx`** — real Rename (`renameBoard`), Share (`inviteMember`), and Delete (`deleteBoard`) via a "⋯" menu; a disabled star button; a deterministic flat decorative thumbnail (`ThumbArt`, keyed by a hash of the board id) used whenever `board.thumbnail` is null.
-- **`canvas/BoardHeader.tsx`** — real title display + inline rename, a real Share popover (`inviteMember`), a real Delete via the "⋯" menu (`deleteBoard`, owner-gated), and disabled Comment/History/Present icon buttons plus disabled Duplicate/Move/Export menu items. The "Saved" indicator is static text (sync is continuous via Yjs, there is no dirty-state tracking to reflect).
+- **`canvas/BoardHeader.tsx`** — real title display + inline rename, a real Share popover (`inviteMember`, plus a member list fetched on open via `listMembers` with a per-row remove button via `removeMember` for everyone but the owner's own row), a real Delete via the "⋯" menu (`deleteBoard`, owner-gated), and disabled Comment/History/Present icon buttons plus disabled Duplicate/Move/Export menu items. The "Saved" indicator is static text (sync is continuous via Yjs, there is no dirty-state tracking to reflect).
 - **`canvas/Canvas.tsx`** — a `react-konva` `Stage`/`Layer` bound to `useBoardDoc`'s `shapes` array. Owns pointer-driven shape drawing (rect/ellipse/text), a Konva `Transformer` for resize (rotation disabled) — text shapes resize like rect/ellipse (corner handles scale both dimensions, edge handles scale one) and word-wrap to the resized width — a `captureThumbnail` imperative handle, undo/redo (`Cmd/Ctrl+Z` for undo, `Cmd/Ctrl+Y` for redo) and delete-the-selected-shape (`Delete`/`Backspace`) — both suppressed whenever an editable field is focused (the text-edit overlay, the board title rename input, the share popover's email field) so they don't fight normal typing/native undo there, and a self-contained zoom stepper (in/out/fit-to-screen) that manipulates the Konva stage's own scale/position directly — no server-side notion of zoom exists. Text editing is a plain `contentEditable` `<div>` absolutely positioned over the Stage (free-form, no wrap, grows with typed content) that swaps for a static Konva `Text` node on blur.
 - **`board/useBoardDoc.ts`** — beyond the `shapes` mirror and `upsertShape`/`removeShape`/`getShape`, also owns a `Y.UndoManager` scoped to the `shapesMap`, recreated alongside the `Y.Doc`/provider per board. Because Yjs's default `trackedOrigins` is `[null]` (the origin of our own local `transact()` calls) and remote updates arrive with the `WebsocketProvider` as origin, undo/redo is automatically scoped to the local client's own edits — a collaborator's changes are never undone by someone else's Ctrl+Z. Exposes `undo`/`redo`/`canUndo`/`canRedo`, the latter two kept in sync via the manager's `stack-item-added`/`stack-item-popped` events.
 - **`canvas/Toolbar.tsx`** — the floating tool pill. `select`, `rect`/`ellipse` (behind a "Shapes" flyout that also shows disabled Line/Star/Hexagon icons), and `text` are wired to the real `Tool` union, plus real Undo/Redo buttons (disabled based on `canUndo`/`canRedo`); every other icon (Pen, Eraser, Arrow, Sticky, Table, Frame, Image, Comment) is rendered `disabled`.
@@ -216,7 +220,7 @@ flowchart TD
 ```
 .
 ├── .dockerignore                        — excludes node_modules/dist/etc. from the Docker build context
-├── .env.example                         — documents server env vars (PORT, DATABASE_URL, JWT_SECRET, unused R2_* image-upload vars)
+├── .env.example                         — documents server env vars (PORT, DATABASE_URL, JWT_SECRET, APP_URL, EMAIL_FROM/EMAIL_API_KEY, unused R2_* image-upload vars)
 ├── .gitignore                           — node_modules, dist, .env, *.log, and (added this session) the gitignored design-handoff docs folder
 ├── .vscode/settings.json                — editor settings, no app relevance
 ├── Dockerfile                           — single-stage Node 22 Alpine build: npm ci at workspace root, npm run build, boots via `migrate.js && index.js`
@@ -270,15 +274,17 @@ flowchart TD
         ├── asyncHandler.ts              — wraps async Express route handlers so a rejected promise reaches error middleware instead of becoming an unhandled rejection
         ├── auth/
         │   ├── routes.ts                — /auth/* endpoints (see §4)
-        │   ├── routes.test.ts           — tests signup/login/me/refresh/logout behavior and error cases
+        │   ├── routes.test.ts           — tests signup/login/me/refresh/logout/forgot-password/reset-password behavior and error cases
         │   ├── middleware.ts            — cookie parsing + `requireAuth` Express middleware
-        │   ├── jwt.ts                   — sign/verify access & refresh JWTs (HS256 via `JWT_SECRET`), TTL constants
+        │   ├── jwt.ts                   — sign/verify access, refresh, and password-reset JWTs (HS256 via `JWT_SECRET`), TTL constants, `passwordVersion()` fingerprint helper
         │   ├── jwt.test.ts              — round-trip + expiry/tamper tests for jwt.ts
         │   ├── password.ts              — bcrypt hash/verify wrappers (10 salt rounds)
         │   └── password.test.ts         — hash/verify correctness tests
+        ├── email/
+        │   └── sendEmail.ts             — provider-agnostic send seam (see §4's `/auth/forgot-password`); dev mode (no `EMAIL_API_KEY`) logs instead of sending
         ├── boards/
         │   ├── routes.ts                — /boards/* endpoints (see §4)
-        │   └── routes.test.ts           — tests board CRUD, role-based 403s, and the members-invite endpoint
+        │   └── routes.test.ts           — tests board CRUD, role-based 403s, and the members list/invite/remove endpoints
         ├── db/
         │   ├── schema.ts                — Drizzle table definitions (see §3)
         │   ├── index.ts                 — `drizzle(pool, {schema})` — the shared `db` client every route/module imports
@@ -313,13 +319,9 @@ server/drizzle/
 
 The tiered backlog agreed earlier this session, annotated with which currently-real file(s) each item would touch:
 
-**Tier 1 — Core usability gaps**
-- Board member management (no way to see or remove board members — invites are add-only and require the invitee to already have an account, confirmed via `boards/routes.ts`) → new `GET/DELETE /boards/:id/members` routes in `server/src/boards/routes.ts`, plus UI in `client/src/canvas/BoardHeader.tsx` and/or `client/src/dashboard/BoardCard.tsx`
-- Password reset flow (inert "Forgot password?" link) → `client/src/auth/LoginForm.tsx`, new server routes alongside `server/src/auth/routes.ts`, needs an email-sending mechanism
-
 **Tier 2 — Collaboration polish**
 - Live cursors/presence (Yjs awareness not wired up) → `client/src/board/useBoardDoc.ts` (awareness API), `client/src/canvas/Canvas.tsx` (render cursors) — the server already relays awareness frames opaquely in `server/src/ws/syncHandler.ts`
-- Real invite emails (invite silently requires the invitee already has an account, no email sent) → `server/src/boards/routes.ts` (`POST /:id/members`), needs an email-sending mechanism
+- Real invite emails (invite silently requires the invitee already has an account, no email sent) → `server/src/boards/routes.ts` (`POST /:id/members`), can now reuse `server/src/email/sendEmail.ts` (built for password reset) instead of needing a new mechanism
 
 **Tier 3 — Expanded canvas toolset**
 - Sticky notes (+ color flyout) → `client/src/canvas/types.ts`, `Canvas.tsx`, `Toolbar.tsx`

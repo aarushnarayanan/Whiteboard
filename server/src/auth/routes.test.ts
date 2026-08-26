@@ -7,6 +7,8 @@ import { db } from "../db/index.js";
 import { users } from "../db/schema.js";
 import { pool } from "../db/pool.js";
 import { createBoardServer } from "../httpServer.js";
+import { passwordVersion, signResetToken } from "./jwt.js";
+import { hashPassword } from "./password.js";
 
 let server: Server;
 let baseUrl: string;
@@ -105,5 +107,70 @@ describe("auth routes", () => {
       headers: { cookie: cookieHeader },
     });
     expect(logoutRes.status).toBe(200);
+  });
+
+  it("returns 200 from /forgot-password whether or not the email is registered (no enumeration)", async () => {
+    const knownRes = await fetch(`${baseUrl}/auth/forgot-password`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: TEST_EMAIL }),
+    });
+    expect(knownRes.status).toBe(200);
+
+    const unknownRes = await fetch(`${baseUrl}/auth/forgot-password`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "routes-test-nobody@example.com" }),
+    });
+    expect(unknownRes.status).toBe(200);
+  });
+
+  it("resets a password with a valid token, and the token can't be reused afterward", async () => {
+    const email = "routes-test-reset@example.com";
+    const [user] = await db
+      .insert(users)
+      .values({ email, name: "Reset Test", passwordHash: await hashPassword("original password") })
+      .returning();
+
+    const token = signResetToken({ sub: user.id, pwv: passwordVersion(user.passwordHash!) });
+
+    const resetRes = await fetch(`${baseUrl}/auth/reset-password`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token, password: "brand new password" }),
+    });
+    expect(resetRes.status).toBe(200);
+    expect(resetRes.headers.getSetCookie().some((c) => c.startsWith("access_token="))).toBe(true);
+
+    const oldPasswordRes = await fetch(`${baseUrl}/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, password: "original password" }),
+    });
+    expect(oldPasswordRes.status).toBe(401);
+
+    const newPasswordRes = await fetch(`${baseUrl}/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, password: "brand new password" }),
+    });
+    expect(newPasswordRes.status).toBe(200);
+
+    // Same token again — the pwv fingerprint no longer matches the (now-changed) password hash.
+    const replayRes = await fetch(`${baseUrl}/auth/reset-password`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token, password: "yet another password" }),
+    });
+    expect(replayRes.status).toBe(400);
+  });
+
+  it("rejects garbage or malformed reset tokens", async () => {
+    const res = await fetch(`${baseUrl}/auth/reset-password`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: "not-a-real-token", password: "whatever password" }),
+    });
+    expect(res.status).toBe(400);
   });
 });
