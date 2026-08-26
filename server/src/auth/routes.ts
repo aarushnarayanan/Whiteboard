@@ -1,4 +1,5 @@
 import { Router, type CookieOptions, type Response } from "express";
+import { randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { asyncHandler } from "../asyncHandler.js";
 import { db } from "../db/index.js";
@@ -198,6 +199,98 @@ authRouter.post("/logout", (_req, res) => {
   res.clearCookie("refresh_token", COOKIE_OPTS);
   res.status(200).json({ ok: true });
 });
+
+function googleRedirectUri(): string {
+  return `${appUrl()}/auth/google/callback`;
+}
+
+authRouter.get("/google", (_req, res) => {
+  // CSRF guard for the OAuth round trip: a random value we control on both
+  // ends — sent to Google now, and required to match a short-lived cookie
+  // when Google redirects back — so a forged callback request can't log
+  // someone into an attacker-chosen Google account.
+  const state = randomBytes(16).toString("hex");
+  res.cookie("oauth_state", state, { ...COOKIE_OPTS, maxAge: 5 * 60 * 1000 });
+
+  const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  url.searchParams.set("client_id", process.env.GOOGLE_CLIENT_ID!);
+  url.searchParams.set("redirect_uri", googleRedirectUri());
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("scope", "openid email profile");
+  url.searchParams.set("state", state);
+  // Always show Google's account chooser instead of silently reusing
+  // whatever Google identity is already active in the browser.
+  url.searchParams.set("prompt", "select_account");
+  res.redirect(url.toString());
+});
+
+// Exported for testing: the account-linking logic without the network calls
+// to Google. An existing password-based account with a matching email gets
+// Google sign-in linked to it rather than creating a duplicate account.
+export async function findOrCreateGoogleUser(profile: {
+  sub: string;
+  email: string;
+  name: string;
+}): Promise<{ id: string; email: string; name: string }> {
+  const [byGoogleId] = await db.select().from(users).where(eq(users.googleId, profile.sub));
+  if (byGoogleId) return byGoogleId;
+
+  const [byEmail] = await db.select().from(users).where(eq(users.email, profile.email));
+  if (byEmail) {
+    await db.update(users).set({ googleId: profile.sub }).where(eq(users.id, byEmail.id));
+    return byEmail;
+  }
+
+  const [created] = await db
+    .insert(users)
+    .values({ email: profile.email, name: profile.name, googleId: profile.sub })
+    .returning();
+  return created;
+}
+
+authRouter.get(
+  "/google/callback",
+  asyncHandler(async (req, res) => {
+    const { code, state } = req.query;
+    const stateCookie = getCookie(req.headers.cookie, "oauth_state");
+    res.clearCookie("oauth_state", COOKIE_OPTS);
+
+    if (typeof code !== "string" || typeof state !== "string" || !stateCookie || state !== stateCookie) {
+      res.status(400).send("Google sign-in failed: invalid or expired request. Please try again.");
+      return;
+    }
+
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code,
+        client_id: process.env.GOOGLE_CLIENT_ID!,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+        redirect_uri: googleRedirectUri(),
+        grant_type: "authorization_code",
+      }),
+    });
+    if (!tokenRes.ok) {
+      res.status(400).send("Google sign-in failed: couldn't exchange the authorization code. Please try again.");
+      return;
+    }
+    const { access_token } = (await tokenRes.json()) as { access_token: string };
+
+    const profileRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+      headers: { authorization: `Bearer ${access_token}` },
+    });
+    if (!profileRes.ok) {
+      res.status(400).send("Google sign-in failed: couldn't read your Google profile. Please try again.");
+      return;
+    }
+    const profile = (await profileRes.json()) as { sub: string; email: string; name: string };
+
+    const user = await findOrCreateGoogleUser(profile);
+    setSessionCookies(res, user.id);
+    res.redirect(appUrl());
+  }),
+);
 
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === "object" && err !== null && "code" in err && (err as { code: unknown }).code === "23505";

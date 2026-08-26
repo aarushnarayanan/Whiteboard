@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
-import { like } from "drizzle-orm";
+import { eq, like } from "drizzle-orm";
 import { runMigrations } from "../db/migrate.js";
 import { db } from "../db/index.js";
 import { users } from "../db/schema.js";
@@ -9,6 +9,7 @@ import { pool } from "../db/pool.js";
 import { createBoardServer } from "../httpServer.js";
 import { passwordVersion, signResetToken } from "./jwt.js";
 import { hashPassword } from "./password.js";
+import { findOrCreateGoogleUser } from "./routes.js";
 
 let server: Server;
 let baseUrl: string;
@@ -172,5 +173,36 @@ describe("auth routes", () => {
       body: JSON.stringify({ token: "not-a-real-token", password: "whatever password" }),
     });
     expect(res.status).toBe(400);
+  });
+
+  it("findOrCreateGoogleUser creates a new account for a first-time Google sign-in", async () => {
+    const profile = { sub: "google-sub-new", email: "routes-test-google-new@example.com", name: "Google New" };
+    const user = await findOrCreateGoogleUser(profile);
+    expect(user.email).toBe(profile.email);
+
+    const [row] = await db.select().from(users).where(eq(users.id, user.id));
+    expect(row.googleId).toBe(profile.sub);
+  });
+
+  it("findOrCreateGoogleUser returns the same account on a repeat sign-in", async () => {
+    const profile = { sub: "google-sub-repeat", email: "routes-test-google-repeat@example.com", name: "Google Repeat" };
+    const first = await findOrCreateGoogleUser(profile);
+    const second = await findOrCreateGoogleUser(profile);
+    expect(second.id).toBe(first.id);
+  });
+
+  it("findOrCreateGoogleUser links Google sign-in to an existing password account with the same email", async () => {
+    const email = "routes-test-google-link@example.com";
+    const [existing] = await db
+      .insert(users)
+      .values({ email, name: "Password User", passwordHash: await hashPassword("some password") })
+      .returning();
+
+    const linked = await findOrCreateGoogleUser({ sub: "google-sub-link", email, name: "Google Name" });
+    expect(linked.id).toBe(existing.id);
+
+    const [row] = await db.select().from(users).where(eq(users.id, existing.id));
+    expect(row.googleId).toBe("google-sub-link");
+    expect(row.passwordHash).not.toBeNull(); // linking doesn't clear the existing password
   });
 });

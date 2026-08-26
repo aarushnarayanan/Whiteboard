@@ -23,6 +23,22 @@ function App() {
       .finally(() => setCheckingSession(false));
   }, []);
 
+  useEffect(() => {
+    // A page restored from the browser's back-forward cache (e.g. hitting
+    // "back" after navigating away, like the Google OAuth redirect) skips
+    // this component's mount logic entirely — it's a snapshot of whatever
+    // React state existed at the moment of navigating away, not a fresh
+    // load. That snapshot can be stale (e.g. from before a logout in the
+    // same tab), so re-check the real session with the server whenever one
+    // is restored, instead of trusting the cached UI.
+    function handlePageShow(e: PageTransitionEvent) {
+      if (!e.persisted) return;
+      fetchMe().then(setMe);
+    }
+    window.addEventListener("pageshow", handlePageShow);
+    return () => window.removeEventListener("pageshow", handlePageShow);
+  }, []);
+
   function handleBack() {
     if (openBoard && openBoard.role !== "viewer") {
       const dataUrl = canvasRef.current?.captureThumbnail();

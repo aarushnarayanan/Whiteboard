@@ -14,6 +14,17 @@ export function createApp(): Express {
     res.json({ ok: true });
   });
 
+  // Every /auth and /boards response is per-session/per-user data. Express
+  // auto-generates an ETag for JSON bodies, and without an explicit
+  // Cache-Control the browser is free to treat that as cacheable — so e.g.
+  // a stale cached `/auth/me` (still 200, still an old logged-in user) can
+  // outlive the session that produced it, showing a signed-out browser as
+  // signed in even though every other endpoint correctly sees no session.
+  app.use(["/auth", "/boards"], (_req, res, next) => {
+    res.set("Cache-Control", "no-store");
+    next();
+  });
+
   app.use("/auth", authRouter);
   app.use("/boards", boardsRouter);
 

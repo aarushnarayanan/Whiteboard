@@ -300,7 +300,13 @@ export default function LoginForm({ onAuthed }: LoginFormProps) {
 
           {error && <p className="auth-error">{error}</p>}
 
-          <button type="button" className="auth-google-button" disabled title="Not built yet — needs Google credentials">
+          <button
+            type="button"
+            className="auth-google-button"
+            onClick={() => {
+              window.location.href = "/auth/google";
+            }}
+          >
             <GoogleMark />
             Continue with Google
           </button>
