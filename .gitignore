@@ -3,3 +3,4 @@ dist
 .env
 *.log
 docs/design_handoff_whiteboard_redesign/
+docs/design_handoff_sticky_note_curl/

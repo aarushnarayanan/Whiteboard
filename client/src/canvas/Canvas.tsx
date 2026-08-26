@@ -33,9 +33,32 @@ const TABLE_ROWS = 3;
 const TABLE_COLS = 3;
 const SHAPE_STROKE = "oklch(55% 0.18 250)";
 const SHAPE_FILL = "oklch(93% 0.03 250)";
+const CORNER_ANCHORS = ["top-left", "top-right", "bottom-left", "bottom-right"];
+const ALL_ANCHORS = [
+  "top-left",
+  "top-center",
+  "top-right",
+  "middle-right",
+  "middle-left",
+  "bottom-left",
+  "bottom-center",
+  "bottom-right",
+];
+const STICKY_BAND_RATIO = 0.2;
 
 function emptyTableCells(): string[][] {
   return Array.from({ length: TABLE_ROWS }, () => Array.from({ length: TABLE_COLS }, () => ""));
+}
+
+// Mixes a hex color toward black by `amount` (0-1) — used for the sticky
+// note's top band, which is the base color 3.5% darker (design spec:
+// docs/design_handoff_sticky_note_curl).
+function darken(hex: string, amount: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  const r = Math.round(((n >> 16) & 255) * (1 - amount));
+  const g = Math.round(((n >> 8) & 255) * (1 - amount));
+  const b = Math.round((n & 255) * (1 - amount));
+  return `rgb(${r}, ${g}, ${b})`;
 }
 
 function isBoxTool(t: Tool): boolean {
@@ -250,18 +273,17 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       return;
     }
 
-    const currentScale = stageRef.current?.scaleX() ?? scale;
-    const height = el.offsetHeight / currentScale;
-
     if (shape.type === "sticky") {
       // A blank sticky note is still a meaningful object (the colored box
       // itself), unlike free-standing text — never auto-delete it for being
-      // empty. Fixed width (wraps within the note); only grows taller, never
-      // shrinks below the drawn size.
-      upsertShape({ ...shape, text, height: Math.max(shape.height, height) });
+      // empty. Size is never derived from text content — the note must stay
+      // square, so typing more never stretches it; overflow just wraps.
+      upsertShape({ ...shape, text });
       return;
     }
 
+    const currentScale = stageRef.current?.scaleX() ?? scale;
+    const height = el.offsetHeight / currentScale;
     if (text.trim().length === 0) {
       removeShape(id);
       return;
@@ -434,6 +456,19 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       upsertShape({ ...current, points: [...pts, point.x - start.x, point.y - start.y] });
       return;
     }
+    if (current.type === "sticky") {
+      // Sticky notes are always square — size to the larger drag distance on
+      // either axis rather than letting width/height diverge.
+      const size = Math.max(Math.abs(point.x - start.x), Math.abs(point.y - start.y));
+      upsertShape({
+        ...current,
+        x: point.x < start.x ? start.x - size : start.x,
+        y: point.y < start.y ? start.y - size : start.y,
+        width: size,
+        height: size,
+      });
+      return;
+    }
     upsertShape({
       ...current,
       x: Math.min(start.x, point.x),
@@ -519,6 +554,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     setSelectedId(id);
     onToolUsed();
   }
+
+  const selectedShape = shapes.find((s) => s.id === selectedId);
 
   return (
     <div ref={containerRef} className="canvas-container" onMouseLeave={handleStageMouseLeave}>
@@ -832,65 +869,80 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             }
 
             if (shape.type === "sticky") {
+              // The whole note (base rect + top band + text) lives inside one
+              // draggable/transformable Group, positioned once at shape.x/y,
+              // with children at local (0,0)-relative coordinates. Konva then
+              // moves the entire rigid subtree together during a live drag —
+              // if each child were independently pinned to shape.x/y (React
+              // state, which only updates on drop) the top band would visibly
+              // lag behind the base rect until the state update landed.
+              //
               // The note's colored box stays rendered the whole time — same
               // pattern as frame's label — so it never appears to "vanish"
               // while the text overlay (which sits on top, transparent) is
               // focused for editing.
+              const bandHeight = shape.height * STICKY_BAND_RATIO;
               return (
-                <Group key={shape.id}>
+                <Group
+                  key={shape.id}
+                  ref={(node: Konva.Node | null) => {
+                    if (node) shapeRefs.current.set(shape.id, node);
+                    else shapeRefs.current.delete(shape.id);
+                  }}
+                  x={shape.x}
+                  y={shape.y}
+                  draggable={canEdit && tool === "select"}
+                  onClick={() => setSelectedId(shape.id)}
+                  onTap={() => setSelectedId(shape.id)}
+                  onDblClick={() => {
+                    if (!canEdit || tool !== "select") return;
+                    setSelectedId(shape.id);
+                    setEditingId(shape.id);
+                  }}
+                  onDblTap={() => {
+                    if (!canEdit || tool !== "select") return;
+                    setSelectedId(shape.id);
+                    setEditingId(shape.id);
+                  }}
+                  onDragEnd={(e: KonvaEventObject<DragEvent>) => {
+                    upsertShape({ ...shape, x: e.target.x(), y: e.target.y() });
+                  }}
+                  onTransformEnd={(e: KonvaEventObject<Event>) => {
+                    // Square, always — enforced again here regardless of what
+                    // the Transformer's keepRatio/corner-only anchors already
+                    // guarantee, so a diagonal drag can never leave it skewed.
+                    const node = e.target;
+                    const scaleX = node.scaleX();
+                    const scaleY = node.scaleY();
+                    node.scaleX(1);
+                    node.scaleY(1);
+                    const size = Math.max(60, shape.width * Math.max(scaleX, scaleY));
+                    upsertShape({ ...shape, x: node.x(), y: node.y(), width: size, height: size });
+                  }}
+                >
                   <Rect
-                    ref={(node: Konva.Node | null) => {
-                      if (node) shapeRefs.current.set(shape.id, node);
-                      else shapeRefs.current.delete(shape.id);
-                    }}
                     id={shape.id}
-                    x={shape.x}
-                    y={shape.y}
+                    x={0}
+                    y={0}
                     width={shape.width}
                     height={shape.height}
                     fill={shape.color ?? "#fff3c4"}
-                    stroke="rgba(0,0,0,0.12)"
-                    strokeWidth={1}
-                    shadowColor="rgba(0,0,0,0.15)"
-                    shadowBlur={6}
-                    shadowOffsetY={2}
-                    draggable={canEdit && tool === "select"}
-                    onClick={() => setSelectedId(shape.id)}
-                    onTap={() => setSelectedId(shape.id)}
-                    onDblClick={() => {
-                      if (!canEdit || tool !== "select") return;
-                      setSelectedId(shape.id);
-                      setEditingId(shape.id);
-                    }}
-                    onDblTap={() => {
-                      if (!canEdit || tool !== "select") return;
-                      setSelectedId(shape.id);
-                      setEditingId(shape.id);
-                    }}
-                    onDragEnd={(e: KonvaEventObject<DragEvent>) => {
-                      upsertShape({ ...shape, x: e.target.x(), y: e.target.y() });
-                    }}
-                    onTransformEnd={(e: KonvaEventObject<Event>) => {
-                      const node = e.target;
-                      const scaleX = node.scaleX();
-                      const scaleY = node.scaleY();
-                      node.scaleX(1);
-                      node.scaleY(1);
-                      upsertShape({
-                        ...shape,
-                        x: node.x(),
-                        y: node.y(),
-                        width: Math.max(60, shape.width * scaleX),
-                        height: Math.max(60, shape.height * scaleY),
-                      });
-                    }}
+                    shadowColor="rgba(20,20,25,0.35)"
+                    shadowBlur={16}
+                    shadowOffsetX={0}
+                    shadowOffsetY={10}
                   />
+                  {/* Top band: reads as the note pressed flat against the board at
+                      the top. Flat surface detail, not a separate object — no
+                      shadow of its own, and non-interactive so it doesn't steal
+                      hit-testing from the base rect above. */}
+                  <Rect x={0} y={0} width={shape.width} height={bandHeight} fill={darken(shape.color ?? "#fff3c4", 0.035)} listening={false} />
                   {editingId !== shape.id && (
                     <Text
-                      x={shape.x + 10}
-                      y={shape.y + 10}
+                      x={10}
+                      y={bandHeight + 8}
                       width={shape.width - 20}
-                      height={shape.height - 20}
+                      height={shape.height - bandHeight - 16}
                       text={shape.text ?? ""}
                       fontSize={14}
                       fontFamily={TEXT_FONT_FAMILY}
@@ -973,7 +1025,14 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
               />
             );
           })}
-          {canEdit && <Transformer ref={transformerRef} rotateEnabled={false} />}
+          {canEdit && (
+            <Transformer
+              ref={transformerRef}
+              rotateEnabled={false}
+              keepRatio={selectedShape?.type === "sticky"}
+              enabledAnchors={selectedShape?.type === "sticky" ? CORNER_ANCHORS : ALL_ANCHORS}
+            />
+          )}
 
           {Array.from(remoteCursors.entries()).map(([clientId, cursor]) => (
             <Group key={clientId} x={cursor.x} y={cursor.y} scaleX={1 / scale} scaleY={1 / scale} listening={false}>
@@ -1004,7 +1063,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
           if (!editingShape || !stage) return null;
 
           if (editingShape.type === "sticky") {
-            const pos = toScreenPoint(stage, { x: editingShape.x + 10, y: editingShape.y + 10 });
+            const bandHeight = editingShape.height * STICKY_BAND_RATIO;
+            const pos = toScreenPoint(stage, { x: editingShape.x + 10, y: editingShape.y + bandHeight + 8 });
             return (
               <div
                 key={editingShape.id}
@@ -1016,7 +1076,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   left: pos.x,
                   top: pos.y,
                   width: (editingShape.width - 20) * scale,
-                  minHeight: (editingShape.height - 20) * scale,
+                  minHeight: (editingShape.height - bandHeight - 16) * scale,
                   fontSize: 14 * scale,
                   background: "transparent",
                   outline: "none",
