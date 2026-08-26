@@ -8,6 +8,8 @@ interface ToolbarProps {
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
+  stickyColor: string;
+  onStickyColorChange: (color: string) => void;
 }
 
 function SelectIcon() {
@@ -178,21 +180,47 @@ function RedoIcon() {
   );
 }
 
-const SHAPE_ITEMS: { label: string; icon: ReactElement; tool?: "rect" | "ellipse" }[] = [
+const SHAPE_ITEMS: { label: string; icon: ReactElement; tool: "rect" | "ellipse" | "line" | "arrow" | "star" | "hexagon" }[] = [
   { label: "Rectangle", icon: <RectIcon />, tool: "rect" },
   { label: "Ellipse", icon: <EllipseIcon />, tool: "ellipse" },
-  { label: "Line", icon: <LineIcon /> },
-  { label: "Arrow", icon: <ArrowIcon /> },
-  { label: "Star", icon: <StarIcon /> },
-  { label: "Hexagon", icon: <HexagonIcon /> },
+  { label: "Line", icon: <LineIcon />, tool: "line" },
+  { label: "Arrow", icon: <ArrowIcon />, tool: "arrow" },
+  { label: "Star", icon: <StarIcon />, tool: "star" },
+  { label: "Hexagon", icon: <HexagonIcon />, tool: "hexagon" },
 ];
 
-export default function Toolbar({ tool, onChange, canUndo, canRedo, onUndo, onRedo }: ToolbarProps) {
+const STICKY_COLORS = [
+  { label: "Yellow", value: "#fff3c4" },
+  { label: "Pink", value: "#fbdce7" },
+  { label: "Blue", value: "#d7e4fb" },
+  { label: "Green", value: "#dcf0d8" },
+];
+
+export default function Toolbar({
+  tool,
+  onChange,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
+  stickyColor,
+  onStickyColorChange,
+}: ToolbarProps) {
   const [shapesOpen, setShapesOpen] = useState(false);
-  const isShapeTool = tool === "rect" || tool === "ellipse";
+  const [stickyOpen, setStickyOpen] = useState(false);
+  const isShapeTool =
+    tool === "rect" || tool === "ellipse" || tool === "line" || tool === "arrow" || tool === "star" || tool === "hexagon";
 
   function selectTool(t: Tool) {
     onChange(t);
+    setShapesOpen(false);
+    setStickyOpen(false);
+  }
+
+  function selectSticky(color: string) {
+    onStickyColorChange(color);
+    onChange("sticky");
+    setStickyOpen(false);
     setShapesOpen(false);
   }
 
@@ -207,10 +235,22 @@ export default function Toolbar({ tool, onChange, canUndo, canRedo, onUndo, onRe
       >
         <SelectIcon />
       </button>
-      <button type="button" className="toolbar-button" disabled title="Not built yet">
+      <button
+        type="button"
+        className="toolbar-button"
+        aria-pressed={tool === "pen"}
+        title="Pen"
+        onClick={() => selectTool("pen")}
+      >
         <PenIcon />
       </button>
-      <button type="button" className="toolbar-button" disabled title="Not built yet">
+      <button
+        type="button"
+        className="toolbar-button"
+        aria-pressed={tool === "eraser"}
+        title="Eraser"
+        onClick={() => selectTool("eraser")}
+      >
         <EraserIcon />
       </button>
 
@@ -235,10 +275,9 @@ export default function Toolbar({ tool, onChange, canUndo, canRedo, onUndo, onRe
                   key={item.label}
                   type="button"
                   className="toolbar-flyout-button"
-                  disabled={!item.tool}
-                  title={item.tool ? item.label : "Not built yet"}
-                  aria-pressed={!!item.tool && item.tool === tool}
-                  onClick={() => item.tool && selectTool(item.tool)}
+                  title={item.label}
+                  aria-pressed={item.tool === tool}
+                  onClick={() => selectTool(item.tool)}
                 >
                   {item.icon}
                 </button>
@@ -248,9 +287,6 @@ export default function Toolbar({ tool, onChange, canUndo, canRedo, onUndo, onRe
         )}
       </div>
 
-      <button type="button" className="toolbar-button" disabled title="Not built yet">
-        <ArrowIcon />
-      </button>
       <button
         type="button"
         className="toolbar-button"
@@ -260,13 +296,51 @@ export default function Toolbar({ tool, onChange, canUndo, canRedo, onUndo, onRe
       >
         <span className="toolbar-text-glyph">T</span>
       </button>
-      <button type="button" className="toolbar-button" disabled title="Not built yet">
-        <StickyIcon />
-      </button>
-      <button type="button" className="toolbar-button" disabled title="Not built yet">
+      <div className="toolbar-flyout-wrap">
+        <button
+          type="button"
+          className="toolbar-button"
+          aria-pressed={tool === "sticky"}
+          title="Sticky note"
+          onClick={() => setStickyOpen((s) => !s)}
+        >
+          <StickyIcon />
+        </button>
+        {stickyOpen && (
+          <>
+            <div className="toolbar-flyout-backdrop" onClick={() => setStickyOpen(false)} />
+            <div className="toolbar-flyout toolbar-sticky-flyout">
+              {STICKY_COLORS.map((c) => (
+                <button
+                  key={c.value}
+                  type="button"
+                  className="toolbar-sticky-swatch"
+                  style={{ background: c.value }}
+                  title={c.label}
+                  aria-pressed={tool === "sticky" && stickyColor === c.value}
+                  onClick={() => selectSticky(c.value)}
+                />
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+      <button
+        type="button"
+        className="toolbar-button"
+        aria-pressed={tool === "table"}
+        title="Table"
+        onClick={() => selectTool("table")}
+      >
         <TableIcon />
       </button>
-      <button type="button" className="toolbar-button" disabled title="Not built yet">
+      <button
+        type="button"
+        className="toolbar-button"
+        aria-pressed={tool === "frame"}
+        title="Frame"
+        onClick={() => selectTool("frame")}
+      >
         <FrameIcon />
       </button>
       <button type="button" className="toolbar-button" disabled title="Not built yet">

@@ -11,6 +11,7 @@ import "./App.css";
 
 function App() {
   const [tool, setTool] = useState<Tool>("select");
+  const [stickyColor, setStickyColor] = useState("#fff3c4");
   const [me, setMe] = useState<Me | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [openBoard, setOpenBoard] = useState<BoardSummary | null>(null);
@@ -84,6 +85,7 @@ function App() {
           onToolUsed={() => setTool("select")}
           onHistoryChange={setHistory}
           me={me}
+          stickyColor={stickyColor}
         />
         {canEdit && (
           <Toolbar
@@ -93,6 +95,8 @@ function App() {
             canRedo={history.canRedo}
             onUndo={() => canvasRef.current?.undo()}
             onRedo={() => canvasRef.current?.redo()}
+            stickyColor={stickyColor}
+            onStickyColorChange={setStickyColor}
           />
         )}
       </div>

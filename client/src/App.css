@@ -472,6 +472,19 @@
   cursor: default;
 }
 
+.toolbar-sticky-swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  padding: 0;
+}
+.toolbar-sticky-swatch[aria-pressed="true"] {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* Text tool edit overlay */
 
 .text-edit-overlay {
@@ -485,6 +498,15 @@
   line-height: 1.2;
   color: oklch(25% 0.02 250);
   font-family: var(--font-sans);
+}
+
+/* Sticky notes and table cells wrap within a fixed width instead of the
+   text tool's free-form no-wrap growth. */
+.text-edit-overlay-wrap {
+  white-space: pre-wrap;
+  word-break: break-word;
+  outline: none;
+  background: transparent;
 }
 
 /* Zoom stepper */

@@ -1,5 +1,18 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { Stage, Layer, Rect, Ellipse, Text, Transformer, Group, Path } from "react-konva";
+import {
+  Stage,
+  Layer,
+  Rect,
+  Ellipse,
+  Text,
+  Transformer,
+  Group,
+  Path,
+  Line,
+  Arrow,
+  Star,
+  RegularPolygon,
+} from "react-konva";
 import type Konva from "konva";
 import type { KonvaEventObject } from "konva/lib/Node";
 import type { Tool } from "./types";
@@ -13,6 +26,30 @@ const MIN_TEXT_WIDTH = 120;
 const MIN_TEXT_HEIGHT = 32;
 const TEXT_FONT_FAMILY = "system-ui, -apple-system, sans-serif";
 const CURSOR_THROTTLE_MS = 50;
+const STICKY_DEFAULT_SIZE = 180;
+const TABLE_DEFAULT_WIDTH = 300;
+const TABLE_DEFAULT_HEIGHT = 150;
+const TABLE_ROWS = 3;
+const TABLE_COLS = 3;
+const SHAPE_STROKE = "oklch(55% 0.18 250)";
+const SHAPE_FILL = "oklch(93% 0.03 250)";
+
+function emptyTableCells(): string[][] {
+  return Array.from({ length: TABLE_ROWS }, () => Array.from({ length: TABLE_COLS }, () => ""));
+}
+
+function isBoxTool(t: Tool): boolean {
+  return (
+    t === "rect" ||
+    t === "ellipse" ||
+    t === "text" ||
+    t === "star" ||
+    t === "hexagon" ||
+    t === "sticky" ||
+    t === "frame" ||
+    t === "table"
+  );
+}
 const CURSOR_COLORS = [
   "oklch(60% 0.19 25)",
   "oklch(60% 0.17 145)",
@@ -51,10 +88,11 @@ interface CanvasProps {
   onToolUsed: () => void;
   onHistoryChange: (state: { canUndo: boolean; canRedo: boolean }) => void;
   me: Me;
+  stickyColor: string;
 }
 
 const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
-  { boardId, role, tool, onToolUsed, onHistoryChange, me },
+  { boardId, role, tool, onToolUsed, onHistoryChange, me, stickyColor },
   ref
 ) {
   const canEdit = role !== "viewer";
@@ -74,6 +112,9 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const textEditRef = useRef<HTMLDivElement>(null);
   const [remoteCursors, setRemoteCursors] = useState<Map<number, RemoteCursor>>(new Map());
   const lastCursorSent = useRef(0);
+  const erasingRef = useRef(false);
+  const [editingCell, setEditingCell] = useState<{ shapeId: string; row: number; col: number } | null>(null);
+  const cellEditRef = useRef<HTMLDivElement>(null);
 
   useImperativeHandle(ref, () => ({
     captureThumbnail: () => stageRef.current?.toDataURL({ pixelRatio: 0.5 }) ?? null,
@@ -199,15 +240,59 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       return;
     }
     const text = el.innerText.replace(/\n$/, "");
-    const currentScale = stageRef.current?.scaleX() ?? scale;
-    const width = el.offsetWidth / currentScale;
-    const height = el.offsetHeight / currentScale;
     setEditingId(null);
+
+    if (shape.type === "frame") {
+      // A frame's label is just a caption — its box size is controlled by
+      // its own resize handles, not by how much text is in the label, and an
+      // empty label is still a meaningful (unlabeled) frame.
+      upsertShape({ ...shape, text });
+      return;
+    }
+
+    const currentScale = stageRef.current?.scaleX() ?? scale;
+    const height = el.offsetHeight / currentScale;
+
+    if (shape.type === "sticky") {
+      // A blank sticky note is still a meaningful object (the colored box
+      // itself), unlike free-standing text — never auto-delete it for being
+      // empty. Fixed width (wraps within the note); only grows taller, never
+      // shrinks below the drawn size.
+      upsertShape({ ...shape, text, height: Math.max(shape.height, height) });
+      return;
+    }
+
     if (text.trim().length === 0) {
       removeShape(id);
       return;
     }
+    const width = el.offsetWidth / currentScale;
     upsertShape({ ...shape, text, width: Math.max(MIN_TEXT_WIDTH, width), height: Math.max(MIN_TEXT_HEIGHT, height) });
+  }
+
+  useEffect(() => {
+    if (!editingCell) return;
+    const el = cellEditRef.current;
+    if (!el) return;
+    el.focus();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }, [editingCell]);
+
+  function commitCellEdit() {
+    const cell = editingCell;
+    const el = cellEditRef.current;
+    setEditingCell(null);
+    if (!cell || !el) return;
+    const shape = getShape(cell.shapeId);
+    if (!shape) return;
+    const cells = (shape.cells ?? emptyTableCells()).map((row) => [...row]);
+    cells[cell.row][cell.col] = el.innerText.replace(/\n$/, "");
+    upsertShape({ ...shape, cells });
   }
 
   function applyScale(newScale: number, center?: { x: number; y: number }) {
@@ -260,6 +345,12 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     setScale(1);
   }
 
+  function eraseAt(target: Konva.Node | null | undefined) {
+    if (!target || target === stageRef.current) return;
+    const id = target.id();
+    if (id) removeShape(id);
+  }
+
   function handleStageMouseDown(e: KonvaEventObject<MouseEvent>) {
     const stage = stageRef.current;
     if (!stage) return;
@@ -268,6 +359,13 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     if (clickedOnEmpty) setSelectedId(null);
 
     if (!canEdit) return;
+
+    if (tool === "eraser") {
+      erasingRef.current = true;
+      eraseAt(e.target);
+      return;
+    }
+
     if (tool === "select") return;
     if (!clickedOnEmpty) return;
 
@@ -275,7 +373,33 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     drawStart.current = point;
     const id = crypto.randomUUID();
     drawingId.current = id;
-    upsertShape({ id, type: tool as "rect" | "ellipse" | "text", x: point.x, y: point.y, width: 0, height: 0 });
+
+    if (tool === "line" || tool === "arrow") {
+      upsertShape({ id, type: tool, x: point.x, y: point.y, width: 0, height: 0, points: [0, 0, 0, 0] });
+      return;
+    }
+    if (tool === "pen") {
+      upsertShape({ id, type: "pen", x: point.x, y: point.y, width: 0, height: 0, points: [0, 0] });
+      return;
+    }
+    if (tool === "sticky") {
+      upsertShape({ id, type: "sticky", x: point.x, y: point.y, width: 0, height: 0, color: stickyColor });
+      return;
+    }
+    if (tool === "table") {
+      upsertShape({ id, type: "table", x: point.x, y: point.y, width: 0, height: 0, cells: emptyTableCells() });
+      return;
+    }
+    if (isBoxTool(tool)) {
+      upsertShape({
+        id,
+        type: tool as "rect" | "ellipse" | "text" | "star" | "hexagon" | "frame",
+        x: point.x,
+        y: point.y,
+        width: 0,
+        height: 0,
+      });
+    }
   }
 
   function handleStageMouseMove() {
@@ -289,11 +413,27 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       providerRef.current?.awareness.setLocalStateField("cursor", point);
     }
 
+    if (tool === "eraser" && erasingRef.current) {
+      const pointer = stage.getPointerPosition();
+      if (pointer) eraseAt(stage.getIntersection(pointer));
+      return;
+    }
+
     const id = drawingId.current;
     if (!id) return;
     const start = drawStart.current;
     const current = shapes.find((s) => s.id === id);
     if (!current) return;
+
+    if (current.type === "line" || current.type === "arrow") {
+      upsertShape({ ...current, points: [0, 0, point.x - start.x, point.y - start.y] });
+      return;
+    }
+    if (current.type === "pen") {
+      const pts = current.points ?? [0, 0];
+      upsertShape({ ...current, points: [...pts, point.x - start.x, point.y - start.y] });
+      return;
+    }
     upsertShape({
       ...current,
       x: Math.min(start.x, point.x),
@@ -308,6 +448,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   }
 
   function handleStageMouseUp() {
+    erasingRef.current = false;
     if (!drawingId.current) return;
     const id = drawingId.current;
     drawingId.current = null;
@@ -324,6 +465,48 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       }
       setSelectedId(id);
       setEditingId(id);
+      onToolUsed();
+      return;
+    }
+
+    if (shape.type === "sticky") {
+      if (shape.width < 2 && shape.height < 2) {
+        upsertShape({ ...shape, width: STICKY_DEFAULT_SIZE, height: STICKY_DEFAULT_SIZE });
+      }
+      setSelectedId(id);
+      setEditingId(id);
+      onToolUsed();
+      return;
+    }
+
+    if (shape.type === "table") {
+      if (shape.width < 2 && shape.height < 2) {
+        upsertShape({ ...shape, width: TABLE_DEFAULT_WIDTH, height: TABLE_DEFAULT_HEIGHT });
+      }
+      setSelectedId(id);
+      onToolUsed();
+      return;
+    }
+
+    if (shape.type === "line" || shape.type === "arrow") {
+      const [x1, y1, x2, y2] = shape.points ?? [0, 0, 0, 0];
+      if (Math.hypot(x2 - x1, y2 - y1) < 2) {
+        removeShape(id);
+        onToolUsed();
+        return;
+      }
+      setSelectedId(id);
+      onToolUsed();
+      return;
+    }
+
+    if (shape.type === "pen") {
+      if ((shape.points?.length ?? 0) <= 2) {
+        removeShape(id);
+        onToolUsed();
+        return;
+      }
+      setSelectedId(id);
       onToolUsed();
       return;
     }
@@ -351,31 +534,31 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       >
         <Layer>
           {shapes.map((shape) => {
+            const isCentered = shape.type === "ellipse" || shape.type === "star" || shape.type === "hexagon";
             const commonProps = {
               ref: (node: Konva.Node | null) => {
                 if (node) shapeRefs.current.set(shape.id, node);
                 else shapeRefs.current.delete(shape.id);
               },
+              id: shape.id,
               x: shape.x,
               y: shape.y,
-              fill: "oklch(93% 0.03 250)",
-              stroke: "oklch(55% 0.18 250)",
+              fill: SHAPE_FILL,
+              stroke: SHAPE_STROKE,
               strokeWidth: 2,
               draggable: canEdit && tool === "select",
               onClick: () => setSelectedId(shape.id),
               onTap: () => setSelectedId(shape.id),
               onDragEnd: (e: KonvaEventObject<DragEvent>) => {
                 const node = e.target;
-                const isEllipse = shape.type === "ellipse";
                 upsertShape({
                   ...shape,
-                  x: isEllipse ? node.x() - shape.width / 2 : node.x(),
-                  y: isEllipse ? node.y() - shape.height / 2 : node.y(),
+                  x: isCentered ? node.x() - shape.width / 2 : node.x(),
+                  y: isCentered ? node.y() - shape.height / 2 : node.y(),
                 });
               },
               onTransformEnd: (e: KonvaEventObject<Event>) => {
                 const node = e.target;
-                const isEllipse = shape.type === "ellipse";
                 const scaleX = node.scaleX();
                 const scaleY = node.scaleY();
                 node.scaleX(1);
@@ -384,8 +567,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                 const height = Math.max(2, shape.height * scaleY);
                 upsertShape({
                   ...shape,
-                  x: isEllipse ? node.x() - width / 2 : node.x(),
-                  y: isEllipse ? node.y() - height / 2 : node.y(),
+                  x: isCentered ? node.x() - width / 2 : node.x(),
+                  y: isCentered ? node.y() - height / 2 : node.y(),
                   width,
                   height,
                 });
@@ -405,6 +588,318 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   radiusX={shape.width / 2}
                   radiusY={shape.height / 2}
                 />
+              );
+            }
+            if (shape.type === "star") {
+              const outerRadius = Math.min(shape.width, shape.height) / 2;
+              return (
+                <Star
+                  key={shape.id}
+                  {...commonProps}
+                  x={shape.x + shape.width / 2}
+                  y={shape.y + shape.height / 2}
+                  numPoints={5}
+                  innerRadius={outerRadius * 0.5}
+                  outerRadius={outerRadius}
+                />
+              );
+            }
+            if (shape.type === "hexagon") {
+              return (
+                <RegularPolygon
+                  key={shape.id}
+                  {...commonProps}
+                  x={shape.x + shape.width / 2}
+                  y={shape.y + shape.height / 2}
+                  sides={6}
+                  radius={Math.min(shape.width, shape.height) / 2}
+                />
+              );
+            }
+            if (shape.type === "line" || shape.type === "arrow") {
+              const LineOrArrow = shape.type === "arrow" ? Arrow : Line;
+              return (
+                <LineOrArrow
+                  key={shape.id}
+                  id={shape.id}
+                  x={shape.x}
+                  y={shape.y}
+                  points={shape.points ?? [0, 0, 0, 0]}
+                  stroke={SHAPE_STROKE}
+                  fill={SHAPE_STROKE}
+                  strokeWidth={2.5}
+                  hitStrokeWidth={16}
+                  lineCap="round"
+                  pointerLength={10}
+                  pointerWidth={10}
+                  draggable={canEdit && tool === "select"}
+                  onClick={() => setSelectedId(shape.id)}
+                  onTap={() => setSelectedId(shape.id)}
+                  onDragEnd={(e: KonvaEventObject<DragEvent>) => {
+                    upsertShape({ ...shape, x: e.target.x(), y: e.target.y() });
+                  }}
+                />
+              );
+            }
+            if (shape.type === "pen") {
+              return (
+                <Line
+                  key={shape.id}
+                  id={shape.id}
+                  x={shape.x}
+                  y={shape.y}
+                  points={shape.points ?? [0, 0]}
+                  stroke={SHAPE_STROKE}
+                  strokeWidth={2.5}
+                  hitStrokeWidth={16}
+                  lineCap="round"
+                  lineJoin="round"
+                  tension={0.4}
+                  draggable={canEdit && tool === "select"}
+                  onClick={() => setSelectedId(shape.id)}
+                  onTap={() => setSelectedId(shape.id)}
+                  onDragEnd={(e: KonvaEventObject<DragEvent>) => {
+                    upsertShape({ ...shape, x: e.target.x(), y: e.target.y() });
+                  }}
+                />
+              );
+            }
+            if (shape.type === "frame") {
+              return (
+                <Group key={shape.id}>
+                  <Rect
+                    ref={(node: Konva.Node | null) => {
+                      if (node) shapeRefs.current.set(shape.id, node);
+                      else shapeRefs.current.delete(shape.id);
+                    }}
+                    id={shape.id}
+                    x={shape.x}
+                    y={shape.y}
+                    width={shape.width}
+                    height={shape.height}
+                    stroke="oklch(60% 0.02 250)"
+                    strokeWidth={1.5}
+                    dash={[6, 4]}
+                    fill="transparent"
+                    draggable={canEdit && tool === "select"}
+                    onClick={() => setSelectedId(shape.id)}
+                    onTap={() => setSelectedId(shape.id)}
+                    onDblClick={() => {
+                      if (!canEdit || tool !== "select") return;
+                      setSelectedId(shape.id);
+                      setEditingId(shape.id);
+                    }}
+                    onDblTap={() => {
+                      if (!canEdit || tool !== "select") return;
+                      setSelectedId(shape.id);
+                      setEditingId(shape.id);
+                    }}
+                    onDragEnd={(e: KonvaEventObject<DragEvent>) => {
+                      upsertShape({ ...shape, x: e.target.x(), y: e.target.y() });
+                    }}
+                    onTransformEnd={(e: KonvaEventObject<Event>) => {
+                      const node = e.target;
+                      const scaleX = node.scaleX();
+                      const scaleY = node.scaleY();
+                      node.scaleX(1);
+                      node.scaleY(1);
+                      upsertShape({
+                        ...shape,
+                        x: node.x(),
+                        y: node.y(),
+                        width: Math.max(20, shape.width * scaleX),
+                        height: Math.max(20, shape.height * scaleY),
+                      });
+                    }}
+                  />
+                  {editingId !== shape.id && (
+                    <Text
+                      x={shape.x}
+                      y={shape.y - 20}
+                      text={shape.text || "Frame"}
+                      fontSize={13}
+                      fontFamily={TEXT_FONT_FAMILY}
+                      fill="oklch(50% 0.02 250)"
+                      listening={false}
+                    />
+                  )}
+                </Group>
+              );
+            }
+            if (shape.type === "table") {
+              const cells = shape.cells ?? emptyTableCells();
+              const cellW = shape.width / TABLE_COLS;
+              const cellH = shape.height / TABLE_ROWS;
+              return (
+                <Group key={shape.id}>
+                  <Rect
+                    ref={(node: Konva.Node | null) => {
+                      if (node) shapeRefs.current.set(shape.id, node);
+                      else shapeRefs.current.delete(shape.id);
+                    }}
+                    id={shape.id}
+                    x={shape.x}
+                    y={shape.y}
+                    width={shape.width}
+                    height={shape.height}
+                    fill="#ffffff"
+                    stroke={SHAPE_STROKE}
+                    strokeWidth={2}
+                    draggable={canEdit && tool === "select"}
+                    onClick={() => setSelectedId(shape.id)}
+                    onTap={() => setSelectedId(shape.id)}
+                    onDragEnd={(e: KonvaEventObject<DragEvent>) => {
+                      upsertShape({ ...shape, x: e.target.x(), y: e.target.y() });
+                    }}
+                    onTransformEnd={(e: KonvaEventObject<Event>) => {
+                      const node = e.target;
+                      const scaleX = node.scaleX();
+                      const scaleY = node.scaleY();
+                      node.scaleX(1);
+                      node.scaleY(1);
+                      upsertShape({
+                        ...shape,
+                        x: node.x(),
+                        y: node.y(),
+                        width: Math.max(60, shape.width * scaleX),
+                        height: Math.max(40, shape.height * scaleY),
+                      });
+                    }}
+                  />
+                  {[1, 2].map((i) => (
+                    <Line
+                      key={`v${i}`}
+                      points={[shape.x + cellW * i, shape.y, shape.x + cellW * i, shape.y + shape.height]}
+                      stroke={SHAPE_STROKE}
+                      strokeWidth={1}
+                      listening={false}
+                    />
+                  ))}
+                  {[1, 2].map((i) => (
+                    <Line
+                      key={`h${i}`}
+                      points={[shape.x, shape.y + cellH * i, shape.x + shape.width, shape.y + cellH * i]}
+                      stroke={SHAPE_STROKE}
+                      strokeWidth={1}
+                      listening={false}
+                    />
+                  ))}
+                  {cells.map((row, r) =>
+                    row.map((cellText, c) => {
+                      const isEditingThis =
+                        editingCell?.shapeId === shape.id && editingCell.row === r && editingCell.col === c;
+                      return (
+                        <Group key={`${r}-${c}`}>
+                          <Rect
+                            x={shape.x + c * cellW}
+                            y={shape.y + r * cellH}
+                            width={cellW}
+                            height={cellH}
+                            fill="transparent"
+                            onClick={() => setSelectedId(shape.id)}
+                            onTap={() => setSelectedId(shape.id)}
+                            onDblClick={() => {
+                              if (!canEdit || tool !== "select") return;
+                              setSelectedId(shape.id);
+                              setEditingCell({ shapeId: shape.id, row: r, col: c });
+                            }}
+                            onDblTap={() => {
+                              if (!canEdit || tool !== "select") return;
+                              setSelectedId(shape.id);
+                              setEditingCell({ shapeId: shape.id, row: r, col: c });
+                            }}
+                          />
+                          {!isEditingThis && (
+                            <Text
+                              x={shape.x + c * cellW + 6}
+                              y={shape.y + r * cellH + 6}
+                              width={cellW - 12}
+                              height={cellH - 12}
+                              text={cellText}
+                              fontSize={13}
+                              fontFamily={TEXT_FONT_FAMILY}
+                              fill="oklch(25% 0.02 250)"
+                              wrap="word"
+                              listening={false}
+                            />
+                          )}
+                        </Group>
+                      );
+                    }),
+                  )}
+                </Group>
+              );
+            }
+
+            if (shape.type === "sticky") {
+              // The note's colored box stays rendered the whole time — same
+              // pattern as frame's label — so it never appears to "vanish"
+              // while the text overlay (which sits on top, transparent) is
+              // focused for editing.
+              return (
+                <Group key={shape.id}>
+                  <Rect
+                    ref={(node: Konva.Node | null) => {
+                      if (node) shapeRefs.current.set(shape.id, node);
+                      else shapeRefs.current.delete(shape.id);
+                    }}
+                    id={shape.id}
+                    x={shape.x}
+                    y={shape.y}
+                    width={shape.width}
+                    height={shape.height}
+                    fill={shape.color ?? "#fff3c4"}
+                    stroke="rgba(0,0,0,0.12)"
+                    strokeWidth={1}
+                    shadowColor="rgba(0,0,0,0.15)"
+                    shadowBlur={6}
+                    shadowOffsetY={2}
+                    draggable={canEdit && tool === "select"}
+                    onClick={() => setSelectedId(shape.id)}
+                    onTap={() => setSelectedId(shape.id)}
+                    onDblClick={() => {
+                      if (!canEdit || tool !== "select") return;
+                      setSelectedId(shape.id);
+                      setEditingId(shape.id);
+                    }}
+                    onDblTap={() => {
+                      if (!canEdit || tool !== "select") return;
+                      setSelectedId(shape.id);
+                      setEditingId(shape.id);
+                    }}
+                    onDragEnd={(e: KonvaEventObject<DragEvent>) => {
+                      upsertShape({ ...shape, x: e.target.x(), y: e.target.y() });
+                    }}
+                    onTransformEnd={(e: KonvaEventObject<Event>) => {
+                      const node = e.target;
+                      const scaleX = node.scaleX();
+                      const scaleY = node.scaleY();
+                      node.scaleX(1);
+                      node.scaleY(1);
+                      upsertShape({
+                        ...shape,
+                        x: node.x(),
+                        y: node.y(),
+                        width: Math.max(60, shape.width * scaleX),
+                        height: Math.max(60, shape.height * scaleY),
+                      });
+                    }}
+                  />
+                  {editingId !== shape.id && (
+                    <Text
+                      x={shape.x + 10}
+                      y={shape.y + 10}
+                      width={shape.width - 20}
+                      height={shape.height - 20}
+                      text={shape.text ?? ""}
+                      fontSize={14}
+                      fontFamily={TEXT_FONT_FAMILY}
+                      fill="oklch(25% 0.02 250)"
+                      wrap="word"
+                      listening={false}
+                    />
+                  )}
+                </Group>
               );
             }
 
@@ -434,6 +929,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   if (node) shapeRefs.current.set(shape.id, node);
                   else shapeRefs.current.delete(shape.id);
                 }}
+                id={shape.id}
                 x={shape.x}
                 y={shape.y}
                 width={shape.width}
@@ -506,6 +1002,55 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
           const editingShape = shapes.find((s) => s.id === editingId);
           const stage = stageRef.current;
           if (!editingShape || !stage) return null;
+
+          if (editingShape.type === "sticky") {
+            const pos = toScreenPoint(stage, { x: editingShape.x + 10, y: editingShape.y + 10 });
+            return (
+              <div
+                key={editingShape.id}
+                ref={textEditRef}
+                className="text-edit-overlay text-edit-overlay-wrap"
+                contentEditable
+                suppressContentEditableWarning
+                style={{
+                  left: pos.x,
+                  top: pos.y,
+                  width: (editingShape.width - 20) * scale,
+                  minHeight: (editingShape.height - 20) * scale,
+                  fontSize: 14 * scale,
+                  background: "transparent",
+                  outline: "none",
+                }}
+                onBlur={() => commitTextEdit(editingShape.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") e.currentTarget.blur();
+                }}
+              >
+                {editingShape.text ?? ""}
+              </div>
+            );
+          }
+
+          if (editingShape.type === "frame") {
+            const pos = toScreenPoint(stage, { x: editingShape.x, y: editingShape.y - 20 });
+            return (
+              <div
+                key={editingShape.id}
+                ref={textEditRef}
+                className="text-edit-overlay"
+                contentEditable
+                suppressContentEditableWarning
+                style={{ left: pos.x, top: pos.y, fontSize: 13 * scale }}
+                onBlur={() => commitTextEdit(editingShape.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") e.currentTarget.blur();
+                }}
+              >
+                {editingShape.text ?? ""}
+              </div>
+            );
+          }
+
           const pos = toScreenPoint(stage, { x: editingShape.x, y: editingShape.y });
           return (
             <div
@@ -527,6 +1072,44 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
               }}
             >
               {editingShape.text ?? ""}
+            </div>
+          );
+        })()}
+
+      {editingCell &&
+        (() => {
+          const shape = shapes.find((s) => s.id === editingCell.shapeId);
+          const stage = stageRef.current;
+          if (!shape || !stage) return null;
+          const cellW = shape.width / TABLE_COLS;
+          const cellH = shape.height / TABLE_ROWS;
+          const pos = toScreenPoint(stage, {
+            x: shape.x + editingCell.col * cellW + 6,
+            y: shape.y + editingCell.row * cellH + 6,
+          });
+          const cellText = (shape.cells ?? emptyTableCells())[editingCell.row][editingCell.col];
+          return (
+            <div
+              key={`${editingCell.shapeId}-${editingCell.row}-${editingCell.col}`}
+              ref={cellEditRef}
+              className="text-edit-overlay text-edit-overlay-wrap"
+              contentEditable
+              suppressContentEditableWarning
+              style={{
+                left: pos.x,
+                top: pos.y,
+                width: (cellW - 12) * scale,
+                minHeight: (cellH - 12) * scale,
+                fontSize: 13 * scale,
+                background: "transparent",
+                outline: "none",
+              }}
+              onBlur={commitCellEdit}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") e.currentTarget.blur();
+              }}
+            >
+              {cellText}
             </div>
           );
         })()}
