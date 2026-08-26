@@ -272,6 +272,7 @@ authRouter.get(
       }),
     });
     if (!tokenRes.ok) {
+      console.error("Google token exchange failed", tokenRes.status, await tokenRes.text());
       res.status(400).send("Google sign-in failed: couldn't exchange the authorization code. Please try again.");
       return;
     }
