@@ -6,6 +6,7 @@ export interface BoardSummary {
   thumbnail: string | null;
   updatedAt: string;
   role: BoardRole;
+  starred: boolean;
 }
 
 async function parseJsonOrThrow(res: Response): Promise<unknown> {
@@ -51,11 +52,48 @@ export async function renameBoard(boardId: string, title: string): Promise<void>
   await parseJsonOrThrow(res);
 }
 
+export async function setStarred(boardId: string, starred: boolean): Promise<void> {
+  const res = await fetch(`/boards/${boardId}/star`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ starred }),
+  });
+  await parseJsonOrThrow(res);
+}
+
+export async function duplicateBoard(boardId: string): Promise<BoardSummary> {
+  const res = await fetch(`/boards/${boardId}/duplicate`, { method: "POST", credentials: "include" });
+  return (await parseJsonOrThrow(res)) as BoardSummary;
+}
+
 export async function deleteBoard(boardId: string): Promise<void> {
   const res = await fetch(`/boards/${boardId}`, {
     method: "DELETE",
     credentials: "include",
   });
+  await parseJsonOrThrow(res);
+}
+
+export interface TrashedBoard {
+  id: string;
+  title: string;
+  thumbnail: string | null;
+  deletedAt: string;
+}
+
+export async function listTrash(): Promise<TrashedBoard[]> {
+  const res = await fetch("/boards/trash", { credentials: "include" });
+  return (await parseJsonOrThrow(res)) as TrashedBoard[];
+}
+
+export async function restoreBoard(boardId: string): Promise<void> {
+  const res = await fetch(`/boards/${boardId}/restore`, { method: "POST", credentials: "include" });
+  await parseJsonOrThrow(res);
+}
+
+export async function permanentlyDeleteBoard(boardId: string): Promise<void> {
+  const res = await fetch(`/boards/${boardId}/permanent`, { method: "DELETE", credentials: "include" });
   await parseJsonOrThrow(res);
 }
 

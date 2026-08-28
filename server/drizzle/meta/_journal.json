@@ -29,6 +29,20 @@
       "when": 1787351264594,
       "tag": "0003_faithful_guardian",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787799998057,
+      "tag": "0004_right_mojo",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1787801834658,
+      "tag": "0005_curved_network",
+      "breakpoints": true
     }
   ]
 }

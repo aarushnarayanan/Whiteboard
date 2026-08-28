@@ -1,4 +1,4 @@
-import { bigserial, customType, index, pgEnum, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { bigserial, boolean, customType, index, pgEnum, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   dataType() {
@@ -21,6 +21,7 @@ export const boards = pgTable("boards", {
   thumbnail: bytea("thumbnail"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
 });
 
 export const boardRole = pgEnum("board_role", ["owner", "editor", "viewer"]);
@@ -35,6 +36,7 @@ export const boardMembers = pgTable(
       .notNull()
       .references(() => boards.id, { onDelete: "cascade" }),
     role: boardRole("role").notNull(),
+    starred: boolean("starred").notNull().default(false),
   },
   (table) => [primaryKey({ columns: [table.userId, table.boardId] })],
 );

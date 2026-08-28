@@ -1,9 +1,10 @@
 import { Router } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lt } from "drizzle-orm";
 import { asyncHandler } from "../asyncHandler.js";
 import { db } from "../db/index.js";
-import { boardMembers, boards, users } from "../db/schema.js";
+import { boardMembers, boards, boardSnapshots, users } from "../db/schema.js";
 import { requireAuth } from "../auth/middleware.js";
+import { loadMergedSnapshot } from "../ws/docStore.js";
 
 export const boardsRouter = Router();
 
@@ -25,6 +26,55 @@ boardsRouter.post(
   }),
 );
 
+boardsRouter.post(
+  "/:id/duplicate",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership) {
+      res.status(404).json({ error: "board not found" });
+      return;
+    }
+
+    const [original] = await db.select().from(boards).where(eq(boards.id, boardId));
+    if (!original) {
+      res.status(404).json({ error: "board not found" });
+      return;
+    }
+
+    // Reads the merged content before the transaction: it's its own read-only
+    // transaction (see docStore's isolation-level comment), and duplicating a
+    // board being actively edited only needs a recent-enough copy, not one
+    // atomic with the insert below.
+    const mergedSnapshot = await loadMergedSnapshot(boardId);
+
+    const duplicate = await db.transaction(async (tx) => {
+      const [duplicate] = await tx
+        .insert(boards)
+        .values({ title: `${original.title} (copy)`, thumbnail: original.thumbnail })
+        .returning();
+      await tx.insert(boardMembers).values({ userId: req.userId!, boardId: duplicate.id, role: "owner" });
+      if (mergedSnapshot) {
+        await tx.insert(boardSnapshots).values({ boardId: duplicate.id, snapshot: mergedSnapshot });
+      }
+      return duplicate;
+    });
+
+    res.status(201).json({
+      id: duplicate.id,
+      title: duplicate.title,
+      thumbnail: duplicate.thumbnail ? `data:image/png;base64,${duplicate.thumbnail.toString("base64")}` : null,
+      updatedAt: duplicate.updatedAt,
+      role: "owner" as const,
+      starred: false,
+    });
+  }),
+);
+
 boardsRouter.get(
   "/",
   asyncHandler(async (req, res) => {
@@ -35,10 +85,38 @@ boardsRouter.get(
         thumbnail: boards.thumbnail,
         updatedAt: boards.updatedAt,
         role: boardMembers.role,
+        starred: boardMembers.starred,
       })
       .from(boardMembers)
       .innerJoin(boards, eq(boardMembers.boardId, boards.id))
-      .where(eq(boardMembers.userId, req.userId!));
+      .where(and(eq(boardMembers.userId, req.userId!), isNull(boards.deletedAt)));
+
+    res.json(
+      rows.map((row) => ({
+        ...row,
+        thumbnail: row.thumbnail ? `data:image/png;base64,${row.thumbnail.toString("base64")}` : null,
+      })),
+    );
+  }),
+);
+
+const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+boardsRouter.get(
+  "/trash",
+  asyncHandler(async (req, res) => {
+    // Purge-on-read: no cron job, just clear out anything past retention
+    // whenever someone happens to look at trash. Comparing a nullable
+    // column with `lt` never matches nulls, so live boards are untouched.
+    await db.delete(boards).where(lt(boards.deletedAt, new Date(Date.now() - TRASH_RETENTION_MS)));
+
+    const rows = await db
+      .select({ id: boards.id, title: boards.title, thumbnail: boards.thumbnail, deletedAt: boards.deletedAt })
+      .from(boardMembers)
+      .innerJoin(boards, eq(boardMembers.boardId, boards.id))
+      .where(
+        and(eq(boardMembers.userId, req.userId!), eq(boardMembers.role, "owner"), isNotNull(boards.deletedAt)),
+      );
 
     res.json(
       rows.map((row) => ({
@@ -116,6 +194,56 @@ boardsRouter.delete(
       return;
     }
 
+    await db.update(boards).set({ deletedAt: new Date() }).where(eq(boards.id, boardId));
+    res.status(200).json({ ok: true });
+  }),
+);
+
+boardsRouter.post(
+  "/:id/restore",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership || membership.role !== "owner") {
+      res.status(403).json({ error: "only the owner can restore this board" });
+      return;
+    }
+
+    const [board] = await db.select().from(boards).where(eq(boards.id, boardId));
+    if (!board || board.deletedAt === null) {
+      res.status(400).json({ error: "board isn't in trash" });
+      return;
+    }
+
+    await db.update(boards).set({ deletedAt: null }).where(eq(boards.id, boardId));
+    res.status(200).json({ ok: true });
+  }),
+);
+
+boardsRouter.delete(
+  "/:id/permanent",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership || membership.role !== "owner") {
+      res.status(403).json({ error: "only the owner can permanently delete this board" });
+      return;
+    }
+
+    const [board] = await db.select().from(boards).where(eq(boards.id, boardId));
+    if (!board || board.deletedAt === null) {
+      res.status(400).json({ error: "board isn't in trash" });
+      return;
+    }
+
     // board_members, board_updates, and board_snapshots all cascade-delete
     // from this via their foreign keys (migration 0003) — nothing else to clean up.
     await db.delete(boards).where(eq(boards.id, boardId));
@@ -178,6 +306,33 @@ boardsRouter.get(
       .where(eq(boardMembers.boardId, boardId));
 
     res.json(rows);
+  }),
+);
+
+boardsRouter.patch(
+  "/:id/star",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+    const { starred } = req.body ?? {};
+    if (typeof starred !== "boolean") {
+      res.status(400).json({ error: "starred must be a boolean" });
+      return;
+    }
+
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership) {
+      res.status(404).json({ error: "board not found" });
+      return;
+    }
+
+    await db
+      .update(boardMembers)
+      .set({ starred })
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    res.status(200).json({ ok: true });
   }),
 );
 

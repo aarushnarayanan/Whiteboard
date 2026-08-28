@@ -7,23 +7,21 @@ const docs = new Map<string, Y.Doc>();
 const refCounts = new Map<string, number>();
 const inFlight = new Map<string, Promise<Y.Doc>>();
 
-async function loadDoc(boardId: string): Promise<Y.Doc> {
-  const doc = new Y.Doc();
-
-  // Both reads must see one consistent view of the database. compactBoard folds
-  // updates into the snapshot and deletes them in a single transaction, so a
-  // snapshot read from before that commit paired with an updates read from
-  // after it loses every edit since the previous snapshot.
-  //
-  // REPEATABLE READ (not just a plain transaction) is what buys that: under
-  // the default READ COMMITTED level each statement takes its own snapshot,
-  // so a plain transaction would still straddle the compaction commit.
-  //
-  // No created_at filter: compaction deletes exactly the rows it merged, in the
-  // same transaction, and Yjs updates are idempotent — replaying one that is
-  // already in the snapshot is a no-op. Dropping the filter also stops a row
-  // written concurrently with a compaction from becoming invisible.
-  const { snapshot, updates } = await db.transaction(
+// Both reads must see one consistent view of the database. compactBoard folds
+// updates into the snapshot and deletes them in a single transaction, so a
+// snapshot read from before that commit paired with an updates read from
+// after it loses every edit since the previous snapshot.
+//
+// REPEATABLE READ (not just a plain transaction) is what buys that: under
+// the default READ COMMITTED level each statement takes its own snapshot,
+// so a plain transaction would still straddle the compaction commit.
+//
+// No created_at filter: compaction deletes exactly the rows it merged, in the
+// same transaction, and Yjs updates are idempotent — replaying one that is
+// already in the snapshot is a no-op. Dropping the filter also stops a row
+// written concurrently with a compaction from becoming invisible.
+async function fetchSnapshotAndUpdates(boardId: string) {
+  return db.transaction(
     async (tx) => {
       const snapshotRows = await tx
         .select({ snapshot: boardSnapshots.snapshot })
@@ -40,6 +38,11 @@ async function loadDoc(boardId: string): Promise<Y.Doc> {
     },
     { isolationLevel: "repeatable read", accessMode: "read only" },
   );
+}
+
+async function loadDoc(boardId: string): Promise<Y.Doc> {
+  const doc = new Y.Doc();
+  const { snapshot, updates } = await fetchSnapshotAndUpdates(boardId);
 
   if (snapshot) {
     Y.applyUpdate(doc, new Uint8Array(snapshot));
@@ -49,6 +52,18 @@ async function loadDoc(boardId: string): Promise<Y.Doc> {
   }
 
   return doc;
+}
+
+/** The board's full current content as a single merged snapshot, or null if it has none yet. */
+export async function loadMergedSnapshot(boardId: string): Promise<Buffer | null> {
+  const { snapshot, updates } = await fetchSnapshotAndUpdates(boardId);
+  if (!snapshot && updates.length === 0) return null;
+
+  const doc = new Y.Doc();
+  if (snapshot) Y.applyUpdate(doc, new Uint8Array(snapshot));
+  for (const update of updates) Y.applyUpdate(doc, new Uint8Array(update));
+
+  return Buffer.from(Y.encodeStateAsUpdate(doc));
 }
 
 export async function acquireDoc(boardId: string): Promise<Y.Doc> {

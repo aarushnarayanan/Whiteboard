@@ -1031,7 +1031,18 @@
   color: var(--ink-300);
   font-size: var(--text-sm);
   margin-bottom: 10px;
-  cursor: not-allowed;
+}
+.dash-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: none;
+  font: inherit;
+  color: var(--ink-900);
+}
+.dash-search input::placeholder {
+  color: var(--ink-300);
 }
 
 .dash-new-board {
@@ -1358,6 +1369,82 @@
 .board-card:hover {
   box-shadow: var(--shadow-md);
   border-color: var(--border-medium);
+}
+
+.board-card-trashed {
+  height: auto;
+  overflow: visible;
+}
+
+/* Board list view */
+
+.board-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.board-card-list {
+  height: auto;
+  overflow: visible;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+}
+
+.board-card-list-thumb {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border: none;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--surface-100);
+}
+.board-card-list-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.board-card-list-title {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink-900);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.board-card-list-meta {
+  flex-shrink: 0;
+  width: 90px;
+  font-size: 11.5px;
+  color: var(--ink-300);
+}
+
+.board-card-role-pill-inline {
+  position: static;
+  flex-shrink: 0;
+  background: var(--surface-100);
+}
+
+.board-card-list-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
 }
 
 .board-card-thumb-wrap {

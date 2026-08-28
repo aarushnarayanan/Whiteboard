@@ -140,7 +140,39 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const cellEditRef = useRef<HTMLDivElement>(null);
 
   useImperativeHandle(ref, () => ({
-    captureThumbnail: () => stageRef.current?.toDataURL({ pixelRatio: 0.5 }) ?? null,
+    captureThumbnail: () => {
+      const stage = stageRef.current;
+      if (!stage || shapes.length === 0) return null;
+
+      const PADDING = 40;
+      const THUMB_TARGET_WIDTH = 400;
+      const minX = Math.min(...shapes.map((s) => s.x)) - PADDING;
+      const minY = Math.min(...shapes.map((s) => s.y)) - PADDING;
+      const boxWidth = Math.max(...shapes.map((s) => s.x + s.width)) - minX + PADDING;
+      const boxHeight = Math.max(...shapes.map((s) => s.y + s.height)) - minY + PADDING;
+
+      // Snapshot the shapes' own bounding box in world space, not whatever's
+      // currently panned/zoomed into view — so the thumbnail scales to fit
+      // all content instead of cropping whatever the last viewport happened
+      // to be centered on.
+      const oldScale = stage.scale();
+      const oldPos = stage.position();
+      stage.scale({ x: 1, y: 1 });
+      stage.position({ x: 0, y: 0 });
+
+      const dataUrl = stage.toDataURL({
+        x: minX,
+        y: minY,
+        width: boxWidth,
+        height: boxHeight,
+        pixelRatio: Math.min(1, THUMB_TARGET_WIDTH / boxWidth),
+      });
+
+      stage.scale(oldScale);
+      stage.position(oldPos);
+
+      return dataUrl;
+    },
     undo,
     redo,
   }));

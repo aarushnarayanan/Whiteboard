@@ -1,9 +1,9 @@
 import type { IncomingMessage } from "node:http";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { verifyToken } from "../auth/jwt.js";
 import { getCookie } from "../auth/middleware.js";
 import { db } from "../db/index.js";
-import { boardMembers } from "../db/schema.js";
+import { boardMembers, boards } from "../db/schema.js";
 
 export type BoardRole = "owner" | "editor" | "viewer";
 
@@ -34,7 +34,8 @@ export async function authenticateWSRequest(req: IncomingMessage): Promise<StubA
     const [membership] = await db
       .select({ role: boardMembers.role })
       .from(boardMembers)
-      .where(and(eq(boardMembers.userId, userId), eq(boardMembers.boardId, boardId)));
+      .innerJoin(boards, eq(boardMembers.boardId, boards.id))
+      .where(and(eq(boardMembers.userId, userId), eq(boardMembers.boardId, boardId), isNull(boards.deletedAt)));
     if (!membership) return null;
     return { boardId, role: membership.role };
   } catch {

@@ -13,6 +13,7 @@ function req(url: string, cookie?: string): IncomingMessage {
 }
 
 describe("authenticateWSRequest", () => {
+  let userId: string;
   let boardId: string;
   let cookie: string;
 
@@ -24,6 +25,7 @@ describe("authenticateWSRequest", () => {
       .returning();
     const [board] = await db.insert(boards).values({}).returning();
     await db.insert(boardMembers).values({ userId: user.id, boardId: board.id, role: "editor" });
+    userId = user.id;
     boardId = board.id;
     cookie = `access_token=${signAccessToken({ sub: user.id })}`;
   });
@@ -62,5 +64,11 @@ describe("authenticateWSRequest", () => {
 
   it("rejects a non-matching path", async () => {
     expect(await authenticateWSRequest(req("/health", cookie))).toBeNull();
+  });
+
+  it("rejects a member of a trashed board", async () => {
+    const [trashedBoard] = await db.insert(boards).values({ deletedAt: new Date() }).returning();
+    await db.insert(boardMembers).values({ userId, boardId: trashedBoard.id, role: "owner" });
+    expect(await authenticateWSRequest(req(`/ws/boards/${trashedBoard.id}`, cookie))).toBeNull();
   });
 });

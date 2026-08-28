@@ -1,11 +1,13 @@
 import { useState, type FormEvent } from "react";
-import { deleteBoard, inviteMember, renameBoard, type BoardSummary } from "../api/boards";
+import { deleteBoard, inviteMember, renameBoard, setStarred, type BoardSummary } from "../api/boards";
 
 interface BoardCardProps {
   board: BoardSummary;
+  layout?: "grid" | "list";
   onOpenBoard: (b: BoardSummary) => void;
   onRenamed: (boardId: string, title: string) => void;
   onDeleted: (boardId: string) => void;
+  onStarToggled: (boardId: string, starred: boolean) => void;
 }
 
 function KebabIcon() {
@@ -18,21 +20,29 @@ function KebabIcon() {
   );
 }
 
-function StarIcon() {
+function StarIcon({ filled }: { filled: boolean }) {
   return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth="1.6"
+      aria-hidden="true"
+    >
       <path d="M12 2.5l2.9 6.4 6.9.7-5.2 4.8 1.5 6.9L12 17.7l-6.1 3.6 1.5-6.9-5.2-4.8 6.9-.7z" strokeLinejoin="round" />
     </svg>
   );
 }
 
-function hashVariant(id: string): 1 | 2 | 3 | 4 | 5 {
+export function hashVariant(id: string): 1 | 2 | 3 | 4 | 5 {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
   return ((h % 5) + 1) as 1 | 2 | 3 | 4 | 5;
 }
 
-function ThumbArt({ variant }: { variant: 1 | 2 | 3 | 4 | 5 }) {
+export function ThumbArt({ variant }: { variant: 1 | 2 | 3 | 4 | 5 }) {
   switch (variant) {
     case 1:
       return (
@@ -84,7 +94,14 @@ function ThumbArt({ variant }: { variant: 1 | 2 | 3 | 4 | 5 }) {
   }
 }
 
-export default function BoardCard({ board, onOpenBoard, onRenamed, onDeleted }: BoardCardProps) {
+export default function BoardCard({
+  board,
+  layout = "grid",
+  onOpenBoard,
+  onRenamed,
+  onDeleted,
+  onStarToggled,
+}: BoardCardProps) {
   const canEdit = board.role !== "viewer";
   const isOwner = board.role === "owner";
 
@@ -122,6 +139,16 @@ export default function BoardCard({ board, onOpenBoard, onRenamed, onDeleted }: 
     }
   }
 
+  async function handleToggleStar() {
+    const next = !board.starred;
+    onStarToggled(board.id, next);
+    try {
+      await setStarred(board.id, next);
+    } catch {
+      onStarToggled(board.id, !next);
+    }
+  }
+
   async function handleDelete() {
     setMenuOpen(false);
     if (!window.confirm(`Delete "${board.title}"? This can't be undone.`)) return;
@@ -133,75 +160,116 @@ export default function BoardCard({ board, onOpenBoard, onRenamed, onDeleted }: 
     }
   }
 
-  return (
-    <div className="board-card">
-      <div className="board-card-thumb-wrap">
-        <button type="button" className="board-card-open-thumb" onClick={() => onOpenBoard(board)}>
-          {board.thumbnail ? <img src={board.thumbnail} alt="" /> : <ThumbArt variant={hashVariant(board.id)} />}
-        </button>
+  const thumbContent = board.thumbnail ? (
+    <img src={board.thumbnail} alt="" />
+  ) : (
+    <ThumbArt variant={hashVariant(board.id)} />
+  );
 
-        {board.role !== "owner" && <span className="board-card-role-pill">{board.role}</span>}
+  const editedLabel = `Edited ${new Date(board.updatedAt).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  })}`;
 
-        <div className="board-card-thumb-actions">
-          <button type="button" className="board-card-icon-btn" disabled title="Not built yet">
-            <StarIcon />
-          </button>
-          {canEdit && (
-            <div className="board-card-menu-wrap">
+  const starButton = (
+    <button
+      type="button"
+      className="board-card-icon-btn"
+      onClick={handleToggleStar}
+      aria-label={board.starred ? "Unstar board" : "Star board"}
+    >
+      <StarIcon filled={board.starred} />
+    </button>
+  );
+
+  const optionsMenu = canEdit && (
+    <div className="board-card-menu-wrap">
+      <button
+        type="button"
+        className="board-card-icon-btn"
+        onClick={() => setMenuOpen((m) => !m)}
+        aria-label="Board options"
+      >
+        <KebabIcon />
+      </button>
+      {menuOpen && (
+        <>
+          <div className="board-card-menu-backdrop" onClick={() => setMenuOpen(false)} />
+          <div className="board-card-menu">
+            <button
+              type="button"
+              onClick={() => {
+                setRenaming(true);
+                setMenuOpen(false);
+              }}
+            >
+              Rename
+            </button>
+            {isOwner && (
               <button
                 type="button"
-                className="board-card-icon-btn"
-                onClick={() => setMenuOpen((m) => !m)}
-                aria-label="Board options"
+                onClick={() => {
+                  setSharing((s) => !s);
+                  setMenuOpen(false);
+                }}
               >
-                <KebabIcon />
+                Share
               </button>
-              {menuOpen && (
-                <>
-                  <div className="board-card-menu-backdrop" onClick={() => setMenuOpen(false)} />
-                  <div className="board-card-menu">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setRenaming(true);
-                        setMenuOpen(false);
-                      }}
-                    >
-                      Rename
-                    </button>
-                    {isOwner && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSharing((s) => !s);
-                          setMenuOpen(false);
-                        }}
-                      >
-                        Share
-                      </button>
-                    )}
-                    {isOwner && (
-                      <>
-                        <div className="board-card-menu-divider" />
-                        <button type="button" className="board-card-menu-danger" onClick={handleDelete}>
-                          Delete
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
+            )}
+            {isOwner && (
+              <>
+                <div className="board-card-menu-divider" />
+                <button type="button" className="board-card-menu-danger" onClick={handleDelete}>
+                  Delete
+                </button>
+              </>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
 
-      <button type="button" className="board-card-info" onClick={() => onOpenBoard(board)}>
-        <div className="board-card-title">{board.title}</div>
-        <div className="board-card-meta">
-          Edited {new Date(board.updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
-        </div>
-      </button>
+  return (
+    <div className={`board-card ${layout === "list" ? "board-card-list" : ""}`}>
+      {layout === "list" ? (
+        <>
+          <button type="button" className="board-card-list-thumb" onClick={() => onOpenBoard(board)}>
+            {thumbContent}
+          </button>
+          <button type="button" className="board-card-list-title" onClick={() => onOpenBoard(board)}>
+            {board.title}
+          </button>
+          <span className="board-card-list-meta">{editedLabel}</span>
+          {board.role !== "owner" && (
+            <span className="board-card-role-pill board-card-role-pill-inline">{board.role}</span>
+          )}
+          <div className="board-card-list-actions">
+            {starButton}
+            {optionsMenu}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="board-card-thumb-wrap">
+            <button type="button" className="board-card-open-thumb" onClick={() => onOpenBoard(board)}>
+              {thumbContent}
+            </button>
+
+            {board.role !== "owner" && <span className="board-card-role-pill">{board.role}</span>}
+
+            <div className="board-card-thumb-actions">
+              {starButton}
+              {optionsMenu}
+            </div>
+          </div>
+
+          <button type="button" className="board-card-info" onClick={() => onOpenBoard(board)}>
+            <div className="board-card-title">{board.title}</div>
+            <div className="board-card-meta">{editedLabel}</div>
+          </button>
+        </>
+      )}
 
       {renaming && (
         <form className="board-card-rename" onSubmit={handleRename}>

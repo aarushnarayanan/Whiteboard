@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { createBoard, listBoards, type BoardSummary } from "../api/boards";
+import { createBoard, listBoards, listTrash, type BoardSummary, type TrashedBoard } from "../api/boards";
 import type { Me } from "../api/auth";
 import BoardCard from "./BoardCard";
+import TrashedBoardCard from "./TrashedBoardCard";
 
 interface DashboardProps {
   me: Me;
@@ -151,19 +152,24 @@ function KebabIcon() {
   );
 }
 
-type Nav = "home" | "recent" | "shared";
+type Nav = "home" | "recent" | "shared" | "starred" | "trash";
 type SortBy = "edited" | "name";
+type View = "grid" | "list";
 
 const NAV_LABELS: Record<Nav, string> = {
   home: "Home",
   recent: "Recent",
   shared: "Shared with me",
+  starred: "Starred",
+  trash: "Trash",
 };
 
 const EMPTY_MESSAGES: Record<Nav, string> = {
   home: "No boards yet — create one to get started.",
   recent: "No boards yet — create one to get started.",
   shared: "Nothing shared with you yet.",
+  starred: "No starred boards yet.",
+  trash: "Trash is empty.",
 };
 
 function initials(name: string): string {
@@ -179,12 +185,26 @@ export default function Dashboard({ me, onOpenBoard, onLogout }: DashboardProps)
   const [sortBy, setSortBy] = useState<SortBy>("edited");
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [view, setView] = useState<View>("grid");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [trashedBoards, setTrashedBoards] = useState<TrashedBoard[]>([]);
+  const [trashLoading, setTrashLoading] = useState(false);
+
+  function refreshBoards() {
+    return listBoards().then(setBoards);
+  }
 
   useEffect(() => {
-    listBoards()
-      .then(setBoards)
-      .finally(() => setLoading(false));
+    refreshBoards().finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (nav !== "trash") return;
+    setTrashLoading(true);
+    listTrash()
+      .then(setTrashedBoards)
+      .finally(() => setTrashLoading(false));
+  }, [nav]);
 
   async function handleCreate() {
     const board = await createBoard("Untitled board");
@@ -199,12 +219,30 @@ export default function Dashboard({ me, onOpenBoard, onLogout }: DashboardProps)
     setBoards((prev) => prev.filter((b) => b.id !== boardId));
   }
 
+  function handleStarToggled(boardId: string, starred: boolean) {
+    setBoards((prev) => prev.map((b) => (b.id === boardId ? { ...b, starred } : b)));
+  }
+
+  function handleRestored(boardId: string) {
+    setTrashedBoards((prev) => prev.filter((b) => b.id !== boardId));
+    refreshBoards();
+  }
+
+  function handlePermanentlyDeleted(boardId: string) {
+    setTrashedBoards((prev) => prev.filter((b) => b.id !== boardId));
+  }
+
   function selectNav(next: Nav) {
     setNav(next);
     setProfileMenuOpen(false);
   }
 
-  const filtered = boards.filter((b) => (nav === "shared" ? b.role !== "owner" : true));
+  const filtered = boards.filter((b) => {
+    if (!b.title.toLowerCase().includes(searchQuery.trim().toLowerCase())) return false;
+    if (nav === "shared") return b.role !== "owner";
+    if (nav === "starred") return b.starred;
+    return true;
+  });
   const sorted = [...filtered].sort((a, b) =>
     sortBy === "name" ? a.title.localeCompare(b.title) : +new Date(b.updatedAt) - +new Date(a.updatedAt)
   );
@@ -220,9 +258,14 @@ export default function Dashboard({ me, onOpenBoard, onLogout }: DashboardProps)
           <span className="dash-brand-name">Whiteboard</span>
         </div>
 
-        <div className="dash-search" title="Not built yet">
+        <div className="dash-search">
           <SearchIcon />
-          <span>Search boards...</span>
+          <input
+            type="text"
+            placeholder="Search boards..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
         </div>
 
         <button type="button" className="dash-new-board" onClick={handleCreate}>
@@ -250,7 +293,11 @@ export default function Dashboard({ me, onOpenBoard, onLogout }: DashboardProps)
             <TemplatesIcon />
             <span>Templates</span>
           </button>
-          <button type="button" className="dash-nav-item" disabled title="Not built yet">
+          <button
+            type="button"
+            className={`dash-nav-item ${nav === "starred" ? "dash-nav-item-active" : ""}`}
+            onClick={() => selectNav("starred")}
+          >
             <StarredIcon />
             <span>Starred</span>
           </button>
@@ -266,7 +313,11 @@ export default function Dashboard({ me, onOpenBoard, onLogout }: DashboardProps)
 
         <div className="dash-sidebar-spacer" />
 
-        <button type="button" className="dash-nav-item" disabled title="Not built yet">
+        <button
+          type="button"
+          className={`dash-nav-item ${nav === "trash" ? "dash-nav-item-active" : ""}`}
+          onClick={() => selectNav("trash")}
+        >
           <TrashIcon />
           <span>Trash</span>
         </button>
@@ -301,7 +352,9 @@ export default function Dashboard({ me, onOpenBoard, onLogout }: DashboardProps)
         <div className="dash-topbar">
           <h1>{NAV_LABELS[nav]}</h1>
           <span className="dash-count">
-            {!loading && `${sorted.length} board${sorted.length === 1 ? "" : "s"}`}
+            {nav === "trash"
+              ? !trashLoading && `${trashedBoards.length} board${trashedBoards.length === 1 ? "" : "s"}`
+              : !loading && `${sorted.length} board${sorted.length === 1 ? "" : "s"}`}
           </span>
 
           <div className="dash-topbar-spacer" />
@@ -340,21 +393,49 @@ export default function Dashboard({ me, onOpenBoard, onLogout }: DashboardProps)
           </div>
 
           <div className="dash-view-toggle">
-            <button type="button" className="dash-view-btn dash-view-btn-active" title="Grid view">
+            <button
+              type="button"
+              className={`dash-view-btn ${view === "grid" ? "dash-view-btn-active" : ""}`}
+              onClick={() => setView("grid")}
+              title="Grid view"
+            >
               <GridIcon />
             </button>
-            <button type="button" className="dash-view-btn" disabled title="Not built yet">
+            <button
+              type="button"
+              className={`dash-view-btn ${view === "list" ? "dash-view-btn-active" : ""}`}
+              onClick={() => setView("list")}
+              title="List view"
+            >
               <ListIcon />
             </button>
           </div>
         </div>
 
         <div className="dash-content">
-          {loading ? (
+          {nav === "trash" ? (
+            <>
+              {trashLoading ? (
+                <p className="dashboard-empty">Loading...</p>
+              ) : (
+                <div className="board-grid">
+                  {trashedBoards.map((board) => (
+                    <TrashedBoardCard
+                      key={board.id}
+                      board={board}
+                      onRestored={handleRestored}
+                      onPermanentlyDeleted={handlePermanentlyDeleted}
+                    />
+                  ))}
+                </div>
+              )}
+              {!trashLoading && trashedBoards.length === 0 && <p className="dashboard-empty">{EMPTY_MESSAGES.trash}</p>}
+            </>
+          ) : loading ? (
             <p className="dashboard-empty">Loading...</p>
           ) : (
-            <div className="board-grid">
-              {nav === "home" && (
+            <div className={view === "list" ? "board-list" : "board-grid"}>
+              {nav === "home" && view === "grid" && (
                 <button type="button" className="board-create-card" onClick={handleCreate}>
                   <PlusIcon />
                   <span>Blank board</span>
@@ -364,14 +445,19 @@ export default function Dashboard({ me, onOpenBoard, onLogout }: DashboardProps)
                 <BoardCard
                   key={board.id}
                   board={board}
+                  layout={view}
                   onOpenBoard={onOpenBoard}
                   onRenamed={handleRenamed}
                   onDeleted={handleDeleted}
+                  onStarToggled={handleStarToggled}
                 />
               ))}
             </div>
           )}
-          {!loading && sorted.length === 0 && nav !== "home" && (
+          {nav !== "trash" && !loading && sorted.length === 0 && searchQuery.trim() !== "" && (
+            <p className="dashboard-empty">No boards match "{searchQuery.trim()}".</p>
+          )}
+          {nav !== "trash" && !loading && sorted.length === 0 && searchQuery.trim() === "" && nav !== "home" && (
             <p className="dashboard-empty">{EMPTY_MESSAGES[nav]}</p>
           )}
         </div>

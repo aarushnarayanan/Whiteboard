@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
   deleteBoard,
+  duplicateBoard,
   inviteMember,
   listMembers,
   removeMember,
@@ -14,6 +15,7 @@ interface BoardHeaderProps {
   onBack: () => void;
   onRenamed: (title: string) => void;
   onDeleted: () => void;
+  onDuplicated: (board: BoardSummary) => void;
 }
 
 function BackIcon() {
@@ -77,10 +79,11 @@ function KebabIcon() {
   );
 }
 
-export default function BoardHeader({ board, onBack, onRenamed, onDeleted }: BoardHeaderProps) {
+export default function BoardHeader({ board, onBack, onRenamed, onDeleted, onDuplicated }: BoardHeaderProps) {
   const isOwner = board.role === "owner";
 
   const [titleMenuOpen, setTitleMenuOpen] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState(board.title);
 
@@ -149,6 +152,20 @@ export default function BoardHeader({ board, onBack, onRenamed, onDeleted }: Boa
     }
   }
 
+  async function handleDuplicate() {
+    setTitleMenuOpen(false);
+    setHeaderMenuOpen(false);
+    setDuplicating(true);
+    try {
+      const duplicate = await duplicateBoard(board.id);
+      onDuplicated(duplicate);
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "couldn't duplicate");
+    } finally {
+      setDuplicating(false);
+    }
+  }
+
   return (
     <header className="board-header">
       <button type="button" className="board-header-icon-btn" onClick={onBack} aria-label="Back to boards">
@@ -204,8 +221,8 @@ export default function BoardHeader({ board, onBack, onRenamed, onDeleted }: Boa
               >
                 Rename
               </button>
-              <button type="button" disabled title="Not built yet">
-                Duplicate board
+              <button type="button" disabled={duplicating} onClick={handleDuplicate}>
+                {duplicating ? "Duplicating…" : "Duplicate board"}
               </button>
               <button type="button" disabled title="Not built yet">
                 Move to space
@@ -322,8 +339,8 @@ export default function BoardHeader({ board, onBack, onRenamed, onDeleted }: Boa
               <button type="button" disabled title="Not built yet">
                 Board settings
               </button>
-              <button type="button" disabled title="Not built yet">
-                Duplicate board
+              <button type="button" disabled={duplicating} onClick={handleDuplicate}>
+                {duplicating ? "Duplicating…" : "Duplicate board"}
               </button>
               <button type="button" disabled title="Not built yet">
                 Export

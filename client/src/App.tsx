@@ -75,6 +75,7 @@ function App() {
         onBack={handleBack}
         onRenamed={(title) => setOpenBoard((b) => (b ? { ...b, title } : b))}
         onDeleted={() => setOpenBoard(null)}
+        onDuplicated={setOpenBoard}
       />
       <div className="board-canvas-area">
         <Canvas

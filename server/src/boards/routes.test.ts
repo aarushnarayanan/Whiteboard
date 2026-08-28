@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
-import { like } from "drizzle-orm";
+import { eq, like } from "drizzle-orm";
+import * as Y from "yjs";
 import { runMigrations } from "../db/migrate.js";
 import { db } from "../db/index.js";
-import { users } from "../db/schema.js";
+import { boardSnapshots, boards, users } from "../db/schema.js";
 import { pool } from "../db/pool.js";
 import { createBoardServer } from "../httpServer.js";
 
@@ -304,5 +305,200 @@ describe("boards routes", () => {
     const membersAfterRes = await fetch(`${baseUrl}/boards/${board.id}/members`, { headers: { cookie: ownerCookie } });
     const membersAfter = await membersAfterRes.json();
     expect(membersAfter.find((m: { role: string }) => m.role === "editor")).toBeUndefined();
+  });
+
+  it("lets a member star and unstar a board, and rejects an outsider", async () => {
+    const ownerCookie = await signupAndGetCookie("boards-test-owner9@example.com");
+    const outsiderCookie = await signupAndGetCookie("boards-test-outsider9@example.com");
+
+    const createRes = await fetch(`${baseUrl}/boards`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ title: "Board" }),
+    });
+    const board = await createRes.json();
+
+    const listBeforeRes = await fetch(`${baseUrl}/boards`, { headers: { cookie: ownerCookie } });
+    const listedBefore = await listBeforeRes.json();
+    expect(listedBefore.find((b: { id: string }) => b.id === board.id).starred).toBe(false);
+
+    const outsiderStarRes = await fetch(`${baseUrl}/boards/${board.id}/star`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie: outsiderCookie },
+      body: JSON.stringify({ starred: true }),
+    });
+    expect(outsiderStarRes.status).toBe(404);
+
+    const starRes = await fetch(`${baseUrl}/boards/${board.id}/star`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ starred: true }),
+    });
+    expect(starRes.status).toBe(200);
+
+    const listAfterStarRes = await fetch(`${baseUrl}/boards`, { headers: { cookie: ownerCookie } });
+    const listedAfterStar = await listAfterStarRes.json();
+    expect(listedAfterStar.find((b: { id: string }) => b.id === board.id).starred).toBe(true);
+
+    const unstarRes = await fetch(`${baseUrl}/boards/${board.id}/star`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ starred: false }),
+    });
+    expect(unstarRes.status).toBe(200);
+
+    const listAfterUnstarRes = await fetch(`${baseUrl}/boards`, { headers: { cookie: ownerCookie } });
+    const listedAfterUnstar = await listAfterUnstarRes.json();
+    expect(listedAfterUnstar.find((b: { id: string }) => b.id === board.id).starred).toBe(false);
+  });
+
+  it("moves a deleted board to trash, then lets the owner restore it", async () => {
+    const ownerCookie = await signupAndGetCookie("boards-test-owner10@example.com");
+
+    const createRes = await fetch(`${baseUrl}/boards`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ title: "Trash me" }),
+    });
+    const board = await createRes.json();
+
+    await fetch(`${baseUrl}/boards/${board.id}`, { method: "DELETE", headers: { cookie: ownerCookie } });
+
+    const listRes = await fetch(`${baseUrl}/boards`, { headers: { cookie: ownerCookie } });
+    const listed = await listRes.json();
+    expect(listed.find((b: { id: string }) => b.id === board.id)).toBeUndefined();
+
+    const trashRes = await fetch(`${baseUrl}/boards/trash`, { headers: { cookie: ownerCookie } });
+    expect(trashRes.status).toBe(200);
+    const trashed = await trashRes.json();
+    expect(trashed).toContainEqual(expect.objectContaining({ id: board.id, title: "Trash me" }));
+
+    const restoreRes = await fetch(`${baseUrl}/boards/${board.id}/restore`, {
+      method: "POST",
+      headers: { cookie: ownerCookie },
+    });
+    expect(restoreRes.status).toBe(200);
+
+    const listAfterRestoreRes = await fetch(`${baseUrl}/boards`, { headers: { cookie: ownerCookie } });
+    const listedAfterRestore = await listAfterRestoreRes.json();
+    expect(listedAfterRestore.find((b: { id: string }) => b.id === board.id)).toBeDefined();
+
+    const trashAfterRestoreRes = await fetch(`${baseUrl}/boards/trash`, { headers: { cookie: ownerCookie } });
+    const trashedAfterRestore = await trashAfterRestoreRes.json();
+    expect(trashedAfterRestore.find((b: { id: string }) => b.id === board.id)).toBeUndefined();
+  });
+
+  it("permanently deletes a trashed board and rejects restoring/permanently-deleting a board that isn't trashed", async () => {
+    const ownerCookie = await signupAndGetCookie("boards-test-owner11@example.com");
+
+    const createRes = await fetch(`${baseUrl}/boards`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ title: "Live board" }),
+    });
+    const board = await createRes.json();
+
+    const restoreLiveRes = await fetch(`${baseUrl}/boards/${board.id}/restore`, {
+      method: "POST",
+      headers: { cookie: ownerCookie },
+    });
+    expect(restoreLiveRes.status).toBe(400);
+
+    const permanentLiveRes = await fetch(`${baseUrl}/boards/${board.id}/permanent`, {
+      method: "DELETE",
+      headers: { cookie: ownerCookie },
+    });
+    expect(permanentLiveRes.status).toBe(400);
+
+    await fetch(`${baseUrl}/boards/${board.id}`, { method: "DELETE", headers: { cookie: ownerCookie } });
+
+    const permanentRes = await fetch(`${baseUrl}/boards/${board.id}/permanent`, {
+      method: "DELETE",
+      headers: { cookie: ownerCookie },
+    });
+    expect(permanentRes.status).toBe(200);
+
+    const trashRes = await fetch(`${baseUrl}/boards/trash`, { headers: { cookie: ownerCookie } });
+    const trashed = await trashRes.json();
+    expect(trashed.find((b: { id: string }) => b.id === board.id)).toBeUndefined();
+  });
+
+  it("purges boards trashed more than 30 days ago when trash is listed", async () => {
+    const ownerCookie = await signupAndGetCookie("boards-test-owner12@example.com");
+
+    const createRes = await fetch(`${baseUrl}/boards`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ title: "Old trash" }),
+    });
+    const board = await createRes.json();
+
+    const longAgo = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
+    await db.update(boards).set({ deletedAt: longAgo }).where(eq(boards.id, board.id));
+
+    const trashRes = await fetch(`${baseUrl}/boards/trash`, { headers: { cookie: ownerCookie } });
+    const trashed = await trashRes.json();
+    expect(trashed.find((b: { id: string }) => b.id === board.id)).toBeUndefined();
+
+    const [row] = await db.select().from(boards).where(eq(boards.id, board.id));
+    expect(row).toBeUndefined();
+  });
+
+  it("duplicates a board's content into a new board owned solely by the duplicator, and rejects an outsider", async () => {
+    const ownerCookie = await signupAndGetCookie("boards-test-owner13@example.com");
+    const editorCookie = await signupAndGetCookie("boards-test-editor13@example.com");
+    const outsiderCookie = await signupAndGetCookie("boards-test-outsider13@example.com");
+
+    const createRes = await fetch(`${baseUrl}/boards`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ title: "Original" }),
+    });
+    const original = await createRes.json();
+
+    await fetch(`${baseUrl}/boards/${original.id}/members`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ email: "boards-test-editor13@example.com", role: "editor" }),
+    });
+
+    const seedDoc = new Y.Doc();
+    seedDoc.getMap("shapes").set("shape-1", "hello");
+    await db
+      .insert(boardSnapshots)
+      .values({ boardId: original.id, snapshot: Buffer.from(Y.encodeStateAsUpdate(seedDoc)) });
+
+    const outsiderRes = await fetch(`${baseUrl}/boards/${original.id}/duplicate`, {
+      method: "POST",
+      headers: { cookie: outsiderCookie },
+    });
+    expect(outsiderRes.status).toBe(404);
+
+    const dupRes = await fetch(`${baseUrl}/boards/${original.id}/duplicate`, {
+      method: "POST",
+      headers: { cookie: editorCookie },
+    });
+    expect(dupRes.status).toBe(201);
+    const duplicate = await dupRes.json();
+    expect(duplicate.id).not.toBe(original.id);
+    expect(duplicate.title).toBe("Original (copy)");
+    expect(duplicate.role).toBe("owner");
+
+    const [snapshotRow] = await db.select().from(boardSnapshots).where(eq(boardSnapshots.boardId, duplicate.id));
+    const copiedDoc = new Y.Doc();
+    Y.applyUpdate(copiedDoc, new Uint8Array(snapshotRow.snapshot));
+    expect(copiedDoc.getMap("shapes").get("shape-1")).toBe("hello");
+
+    const editorMembersRes = await fetch(`${baseUrl}/boards/${duplicate.id}/members`, {
+      headers: { cookie: editorCookie },
+    });
+    const editorMembers = await editorMembersRes.json();
+    expect(editorMembers).toHaveLength(1);
+    expect(editorMembers[0].email).toBe("boards-test-editor13@example.com");
+    expect(editorMembers[0].role).toBe("owner");
+
+    const ownerListRes = await fetch(`${baseUrl}/boards`, { headers: { cookie: ownerCookie } });
+    const ownerBoards = await ownerListRes.json();
+    expect(ownerBoards.find((b: { id: string }) => b.id === duplicate.id)).toBeUndefined();
   });
 });
