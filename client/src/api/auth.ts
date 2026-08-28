@@ -2,6 +2,7 @@ export interface Me {
   id: string;
   email: string;
   name: string;
+  hasPassword: boolean;
 }
 
 async function parseJsonOrThrow(res: Response): Promise<unknown> {
@@ -55,6 +56,31 @@ export async function resetPassword(token: string, password: string): Promise<Me
 
 export async function logout(): Promise<void> {
   await fetch("/auth/logout", { method: "POST", credentials: "include" });
+}
+
+export async function updateName(name: string): Promise<void> {
+  const res = await fetch("/auth/me", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ name }),
+  });
+  await parseJsonOrThrow(res);
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  const res = await fetch("/auth/change-password", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+  await parseJsonOrThrow(res);
+}
+
+export async function deleteAccount(): Promise<void> {
+  const res = await fetch("/auth/me", { method: "DELETE", credentials: "include" });
+  await parseJsonOrThrow(res);
 }
 
 /** Returns the signed-in user, or null if there's no valid session. */

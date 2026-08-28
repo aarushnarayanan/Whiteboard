@@ -63,7 +63,15 @@ function App() {
   }
 
   if (!openBoard) {
-    return <Dashboard me={me} onOpenBoard={setOpenBoard} onLogout={handleLogout} />;
+    return (
+      <Dashboard
+        me={me}
+        onOpenBoard={setOpenBoard}
+        onLogout={handleLogout}
+        onMeUpdated={setMe}
+        onAccountDeleted={() => setMe(null)}
+      />
+    );
   }
 
   const canEdit = openBoard.role !== "viewer";

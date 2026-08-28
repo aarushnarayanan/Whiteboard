@@ -3,11 +3,14 @@ import { createBoard, listBoards, listTrash, type BoardSummary, type TrashedBoar
 import type { Me } from "../api/auth";
 import BoardCard from "./BoardCard";
 import TrashedBoardCard from "./TrashedBoardCard";
+import SettingsPanel from "./SettingsPanel";
 
 interface DashboardProps {
   me: Me;
   onOpenBoard: (board: BoardSummary) => void;
   onLogout: () => void;
+  onMeUpdated: (me: Me) => void;
+  onAccountDeleted: () => void;
 }
 
 function HomeIcon() {
@@ -152,7 +155,7 @@ function KebabIcon() {
   );
 }
 
-type Nav = "home" | "recent" | "shared" | "starred" | "trash";
+type Nav = "home" | "recent" | "shared" | "starred" | "trash" | "settings";
 type SortBy = "edited" | "name";
 type View = "grid" | "list";
 
@@ -162,6 +165,7 @@ const NAV_LABELS: Record<Nav, string> = {
   shared: "Shared with me",
   starred: "Starred",
   trash: "Trash",
+  settings: "Settings",
 };
 
 const EMPTY_MESSAGES: Record<Nav, string> = {
@@ -170,6 +174,7 @@ const EMPTY_MESSAGES: Record<Nav, string> = {
   shared: "Nothing shared with you yet.",
   starred: "No starred boards yet.",
   trash: "Trash is empty.",
+  settings: "",
 };
 
 function initials(name: string): string {
@@ -178,7 +183,7 @@ function initials(name: string): string {
   return chars.join("").toUpperCase();
 }
 
-export default function Dashboard({ me, onOpenBoard, onLogout }: DashboardProps) {
+export default function Dashboard({ me, onOpenBoard, onLogout, onMeUpdated, onAccountDeleted }: DashboardProps) {
   const [boards, setBoards] = useState<BoardSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [nav, setNav] = useState<Nav>("home");
@@ -335,7 +340,7 @@ export default function Dashboard({ me, onOpenBoard, onLogout }: DashboardProps)
             <>
               <div className="dash-menu-backdrop" onClick={() => setProfileMenuOpen(false)} />
               <div className="dash-profile-menu">
-                <button type="button" disabled title="Not built yet">
+                <button type="button" onClick={() => selectNav("settings")}>
                   Settings
                 </button>
                 <div className="board-card-menu-divider" />
@@ -351,69 +356,77 @@ export default function Dashboard({ me, onOpenBoard, onLogout }: DashboardProps)
       <main className="dash-main">
         <div className="dash-topbar">
           <h1>{NAV_LABELS[nav]}</h1>
-          <span className="dash-count">
-            {nav === "trash"
-              ? !trashLoading && `${trashedBoards.length} board${trashedBoards.length === 1 ? "" : "s"}`
-              : !loading && `${sorted.length} board${sorted.length === 1 ? "" : "s"}`}
-          </span>
+          {nav !== "settings" && (
+            <span className="dash-count">
+              {nav === "trash"
+                ? !trashLoading && `${trashedBoards.length} board${trashedBoards.length === 1 ? "" : "s"}`
+                : !loading && `${sorted.length} board${sorted.length === 1 ? "" : "s"}`}
+            </span>
+          )}
 
           <div className="dash-topbar-spacer" />
 
-          <div className="dash-sort-wrap">
-            <button type="button" className="dash-sort-trigger" onClick={() => setSortMenuOpen((s) => !s)}>
-              <SortIcon />
-              {sortBy === "name" ? "Alphabetical" : "Last edited"}
-              <ChevronDownIcon />
-            </button>
-            {sortMenuOpen && (
-              <>
-                <div className="dash-menu-backdrop" onClick={() => setSortMenuOpen(false)} />
-                <div className="dash-sort-menu">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSortBy("edited");
-                      setSortMenuOpen(false);
-                    }}
-                  >
-                    Last edited
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSortBy("name");
-                      setSortMenuOpen(false);
-                    }}
-                  >
-                    Alphabetical
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
+          {nav !== "settings" && (
+            <>
+              <div className="dash-sort-wrap">
+                <button type="button" className="dash-sort-trigger" onClick={() => setSortMenuOpen((s) => !s)}>
+                  <SortIcon />
+                  {sortBy === "name" ? "Alphabetical" : "Last edited"}
+                  <ChevronDownIcon />
+                </button>
+                {sortMenuOpen && (
+                  <>
+                    <div className="dash-menu-backdrop" onClick={() => setSortMenuOpen(false)} />
+                    <div className="dash-sort-menu">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSortBy("edited");
+                          setSortMenuOpen(false);
+                        }}
+                      >
+                        Last edited
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSortBy("name");
+                          setSortMenuOpen(false);
+                        }}
+                      >
+                        Alphabetical
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
 
-          <div className="dash-view-toggle">
-            <button
-              type="button"
-              className={`dash-view-btn ${view === "grid" ? "dash-view-btn-active" : ""}`}
-              onClick={() => setView("grid")}
-              title="Grid view"
-            >
-              <GridIcon />
-            </button>
-            <button
-              type="button"
-              className={`dash-view-btn ${view === "list" ? "dash-view-btn-active" : ""}`}
-              onClick={() => setView("list")}
-              title="List view"
-            >
-              <ListIcon />
-            </button>
-          </div>
+              <div className="dash-view-toggle">
+                <button
+                  type="button"
+                  className={`dash-view-btn ${view === "grid" ? "dash-view-btn-active" : ""}`}
+                  onClick={() => setView("grid")}
+                  title="Grid view"
+                >
+                  <GridIcon />
+                </button>
+                <button
+                  type="button"
+                  className={`dash-view-btn ${view === "list" ? "dash-view-btn-active" : ""}`}
+                  onClick={() => setView("list")}
+                  title="List view"
+                >
+                  <ListIcon />
+                </button>
+              </div>
+            </>
+          )}
         </div>
 
         <div className="dash-content">
-          {nav === "trash" ? (
+          {nav === "settings" ? (
+            <SettingsPanel me={me} onMeUpdated={onMeUpdated} onAccountDeleted={onAccountDeleted} />
+          ) : nav === "trash" ? (
             <>
               {trashLoading ? (
                 <p className="dashboard-empty">Loading...</p>
@@ -454,12 +467,15 @@ export default function Dashboard({ me, onOpenBoard, onLogout }: DashboardProps)
               ))}
             </div>
           )}
-          {nav !== "trash" && !loading && sorted.length === 0 && searchQuery.trim() !== "" && (
+          {nav !== "trash" && nav !== "settings" && !loading && sorted.length === 0 && searchQuery.trim() !== "" && (
             <p className="dashboard-empty">No boards match "{searchQuery.trim()}".</p>
           )}
-          {nav !== "trash" && !loading && sorted.length === 0 && searchQuery.trim() === "" && nav !== "home" && (
-            <p className="dashboard-empty">{EMPTY_MESSAGES[nav]}</p>
-          )}
+          {nav !== "trash" &&
+            nav !== "settings" &&
+            !loading &&
+            sorted.length === 0 &&
+            searchQuery.trim() === "" &&
+            nav !== "home" && <p className="dashboard-empty">{EMPTY_MESSAGES[nav]}</p>}
         </div>
       </main>
     </div>

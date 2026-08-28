@@ -1,9 +1,9 @@
 import { Router, type CookieOptions, type Response } from "express";
 import { randomBytes } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { asyncHandler } from "../asyncHandler.js";
 import { db } from "../db/index.js";
-import { users } from "../db/schema.js";
+import { boardMembers, boards, users } from "../db/schema.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import {
   ACCESS_TOKEN_MAX_AGE_MS,
@@ -62,7 +62,7 @@ authRouter.post(
         .returning({ id: users.id });
 
       setSessionCookies(res, user.id);
-      res.status(201).json({ id: user.id, email, name });
+      res.status(201).json({ id: user.id, email, name, hasPassword: true });
     } catch (err: unknown) {
       if (isUniqueViolation(err)) {
         res.status(409).json({ error: "an account with that email already exists" });
@@ -89,7 +89,7 @@ authRouter.post(
     }
 
     setSessionCookies(res, user.id);
-    res.status(200).json({ id: user.id, email: user.email, name: user.name });
+    res.status(200).json({ id: user.id, email: user.email, name: user.name, hasPassword: true });
   }),
 );
 
@@ -98,14 +98,84 @@ authRouter.get(
   requireAuth,
   asyncHandler(async (req, res) => {
     const [user] = await db
-      .select({ id: users.id, email: users.email, name: users.name })
+      .select({ id: users.id, email: users.email, name: users.name, passwordHash: users.passwordHash })
       .from(users)
       .where(eq(users.id, req.userId!));
     if (!user) {
       res.status(401).json({ error: "not signed in" });
       return;
     }
-    res.json(user);
+    res.json({ id: user.id, email: user.email, name: user.name, hasPassword: user.passwordHash !== null });
+  }),
+);
+
+authRouter.patch(
+  "/me",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { name } = req.body ?? {};
+    if (typeof name !== "string" || name.trim() === "") {
+      res.status(400).json({ error: "name is required" });
+      return;
+    }
+    await db.update(users).set({ name: name.trim() }).where(eq(users.id, req.userId!));
+    res.status(200).json({ ok: true });
+  }),
+);
+
+authRouter.post(
+  "/change-password",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { currentPassword, newPassword } = req.body ?? {};
+    if (typeof currentPassword !== "string" || typeof newPassword !== "string") {
+      res.status(400).json({ error: "currentPassword and newPassword are required" });
+      return;
+    }
+    if (newPassword.length < 8) {
+      res.status(400).json({ error: "password must be at least 8 characters" });
+      return;
+    }
+
+    const [user] = await db.select().from(users).where(eq(users.id, req.userId!));
+    if (!user || !user.passwordHash) {
+      res.status(400).json({ error: "this account doesn't have a password set" });
+      return;
+    }
+    if (!(await verifyPassword(currentPassword, user.passwordHash))) {
+      res.status(401).json({ error: "current password is incorrect" });
+      return;
+    }
+
+    const passwordHash = await hashPassword(newPassword);
+    await db.update(users).set({ passwordHash }).where(eq(users.id, user.id));
+    res.status(200).json({ ok: true });
+  }),
+);
+
+authRouter.delete(
+  "/me",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    await db.transaction(async (tx) => {
+      // Boards this user solely owns would otherwise become orphaned once
+      // their board_members row cascades away below — delete those boards
+      // outright first (cascades board_members/board_updates/board_snapshots,
+      // same as the regular board-delete route).
+      const ownedBoardIds = await tx
+        .select({ boardId: boardMembers.boardId })
+        .from(boardMembers)
+        .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.role, "owner")));
+      for (const { boardId } of ownedBoardIds) {
+        await tx.delete(boards).where(eq(boards.id, boardId));
+      }
+
+      await tx.delete(users).where(eq(users.id, req.userId!));
+    });
+
+    res.clearCookie("access_token", COOKIE_OPTS);
+    res.clearCookie("refresh_token", COOKIE_OPTS);
+    res.status(200).json({ ok: true });
   }),
 );
 
@@ -190,7 +260,7 @@ authRouter.post(
     await db.update(users).set({ passwordHash }).where(eq(users.id, user.id));
 
     setSessionCookies(res, user.id);
-    res.status(200).json({ id: user.id, email: user.email, name: user.name });
+    res.status(200).json({ id: user.id, email: user.email, name: user.name, hasPassword: true });
   }),
 );
 

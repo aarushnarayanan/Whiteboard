@@ -1827,3 +1827,108 @@
   width: 54px;
 }
 
+/* Settings panel */
+
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+  max-width: 440px;
+}
+
+.settings-section h2 {
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--ink-900);
+  margin: 0 0 var(--space-md);
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  font-size: var(--text-sm);
+  color: var(--ink-700);
+}
+
+.settings-field input {
+  padding: var(--space-sm) 10px;
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  color: var(--ink-900);
+}
+.settings-field input:disabled {
+  background: var(--surface-100);
+  color: var(--ink-400);
+}
+
+.settings-form-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.settings-button-primary {
+  align-self: flex-start;
+  padding: var(--space-sm) var(--space-md);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: #fff;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.settings-button-primary:hover {
+  background: var(--accent-hover);
+}
+.settings-button-primary:disabled {
+  background: var(--border-medium);
+  cursor: default;
+}
+
+.settings-status {
+  font-size: var(--text-xs);
+  color: var(--ink-400);
+}
+.settings-status-error {
+  color: var(--danger);
+}
+
+.settings-muted {
+  font-size: var(--text-sm);
+  color: var(--ink-400);
+  margin: 0 0 var(--space-md);
+}
+
+.settings-section-danger {
+  padding-top: var(--space-lg);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.settings-button-danger {
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--danger);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.settings-button-danger:hover:not(:disabled) {
+  background: var(--danger-subtle);
+}
+.settings-button-danger:disabled {
+  color: var(--ink-300);
+  border-color: var(--border-medium);
+  cursor: default;
+}
+

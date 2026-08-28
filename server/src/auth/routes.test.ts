@@ -4,10 +4,10 @@ import type { Server } from "node:http";
 import { eq, like } from "drizzle-orm";
 import { runMigrations } from "../db/migrate.js";
 import { db } from "../db/index.js";
-import { users } from "../db/schema.js";
+import { boardMembers, boards, users } from "../db/schema.js";
 import { pool } from "../db/pool.js";
 import { createBoardServer } from "../httpServer.js";
-import { passwordVersion, signResetToken } from "./jwt.js";
+import { passwordVersion, signAccessToken, signResetToken } from "./jwt.js";
 import { hashPassword } from "./password.js";
 import { findOrCreateGoogleUser } from "./routes.js";
 
@@ -205,4 +205,125 @@ describe("auth routes", () => {
     expect(row.googleId).toBe("google-sub-link");
     expect(row.passwordHash).not.toBeNull(); // linking doesn't clear the existing password
   });
+
+  it("reports hasPassword, and lets the user update their display name", async () => {
+    const cookie = await signupAndGetCookie("routes-test-settings-name@example.com");
+
+    const meRes = await fetch(`${baseUrl}/auth/me`, { headers: { cookie } });
+    const me = await meRes.json();
+    expect(me.hasPassword).toBe(true);
+
+    const patchRes = await fetch(`${baseUrl}/auth/me`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ name: "New Name" }),
+    });
+    expect(patchRes.status).toBe(200);
+
+    const meAfterRes = await fetch(`${baseUrl}/auth/me`, { headers: { cookie } });
+    const meAfter = await meAfterRes.json();
+    expect(meAfter.name).toBe("New Name");
+  });
+
+  it("reports hasPassword: false for a google-only account, and rejects a password change for it", async () => {
+    const profile = { sub: "google-sub-settings", email: "routes-test-settings-google@example.com", name: "Google Only" };
+    const user = await findOrCreateGoogleUser(profile);
+    const cookie = `access_token=${signAccessToken({ sub: user.id })}`;
+
+    const meRes = await fetch(`${baseUrl}/auth/me`, { headers: { cookie } });
+    const me = await meRes.json();
+    expect(me.hasPassword).toBe(false);
+
+    const changeRes = await fetch(`${baseUrl}/auth/change-password`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ currentPassword: "whatever", newPassword: "brand new password" }),
+    });
+    expect(changeRes.status).toBe(400);
+  });
+
+  it("changes the password given the correct current password, and rejects the wrong one", async () => {
+    const email = "routes-test-settings-password@example.com";
+    const cookie = await signupAndGetCookie(email, "original password 1");
+
+    const wrongRes = await fetch(`${baseUrl}/auth/change-password`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ currentPassword: "not it", newPassword: "brand new password" }),
+    });
+    expect(wrongRes.status).toBe(401);
+
+    const changeRes = await fetch(`${baseUrl}/auth/change-password`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ currentPassword: "original password 1", newPassword: "brand new password" }),
+    });
+    expect(changeRes.status).toBe(200);
+
+    const oldLoginRes = await fetch(`${baseUrl}/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, password: "original password 1" }),
+    });
+    expect(oldLoginRes.status).toBe(401);
+
+    const newLoginRes = await fetch(`${baseUrl}/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, password: "brand new password" }),
+    });
+    expect(newLoginRes.status).toBe(200);
+  });
+
+  it("deletes the account, removing solely-owned boards and clearing the session", async () => {
+    const cookie = await signupAndGetCookie("routes-test-settings-delete@example.com");
+
+    const ownedRes = await fetch(`${baseUrl}/boards`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ title: "Solely owned" }),
+    });
+    const owned = await ownedRes.json();
+
+    const otherOwnerCookie = await signupAndGetCookie("routes-test-settings-delete-other@example.com");
+    const sharedRes = await fetch(`${baseUrl}/boards`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: otherOwnerCookie },
+      body: JSON.stringify({ title: "Shared with me" }),
+    });
+    const shared = await sharedRes.json();
+    await fetch(`${baseUrl}/boards/${shared.id}/members`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: otherOwnerCookie },
+      body: JSON.stringify({ email: "routes-test-settings-delete@example.com", role: "editor" }),
+    });
+
+    const deleteRes = await fetch(`${baseUrl}/auth/me`, { method: "DELETE", headers: { cookie } });
+    expect(deleteRes.status).toBe(200);
+    expect(deleteRes.headers.getSetCookie().some((c) => c.startsWith("access_token=;"))).toBe(true);
+
+    const [ownedBoardRow] = await db.select().from(boards).where(eq(boards.id, owned.id));
+    expect(ownedBoardRow).toBeUndefined();
+
+    const [sharedMembership] = await db
+      .select()
+      .from(boardMembers)
+      .where(eq(boardMembers.boardId, shared.id));
+    expect(sharedMembership.role).toBe("owner"); // the other owner's membership is untouched
+
+    const meRes = await fetch(`${baseUrl}/auth/me`, { headers: { cookie } });
+    expect(meRes.status).toBe(401);
+  });
 });
+
+async function signupAndGetCookie(email: string, password = "correct horse battery"): Promise<string> {
+  const res = await fetch(`${baseUrl}/auth/signup`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email, name: "Test User", password }),
+  });
+  return res.headers
+    .getSetCookie()
+    .map((c) => c.split(";")[0])
+    .join("; ");
+}
