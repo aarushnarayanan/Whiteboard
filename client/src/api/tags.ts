@@ -1,6 +1,7 @@
 export interface Tag {
   id: string;
   name: string;
+  color: string;
 }
 
 async function parseJsonOrThrow(res: Response): Promise<unknown> {

@@ -53,11 +53,13 @@ describe("tags routes", () => {
     const work = await createWorkRes.json();
     expect(work.name).toBe("Work");
 
-    await fetch(`${baseUrl}/tags`, {
+    const createSchoolRes = await fetch(`${baseUrl}/tags`, {
       method: "POST",
       headers: { "content-type": "application/json", cookie },
       body: JSON.stringify({ name: "School" }),
     });
+    const school = await createSchoolRes.json();
+    expect(school.color).not.toBe(work.color);
 
     const listRes = await fetch(`${baseUrl}/tags`, { headers: { cookie } });
     const list = await listRes.json();

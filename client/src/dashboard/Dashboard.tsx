@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { createBoard, listBoards, listTrash, type BoardSummary, type TrashedBoard } from "../api/boards";
 import { deleteTag, listTags, type Tag } from "../api/tags";
 import type { Me } from "../api/auth";
-import { tagColor } from "../tagColor";
 import BoardCard from "./BoardCard";
 import TrashedBoardCard from "./TrashedBoardCard";
 import SettingsPanel from "./SettingsPanel";
@@ -360,7 +359,7 @@ export default function Dashboard({ me, onOpenBoard, onLogout, onMeUpdated, onAc
                 className={`dash-tag-row ${activeTagId === tag.id ? "dash-tag-row-active" : ""}`}
                 onClick={() => selectTag(tag.id)}
               >
-                <span className="dash-tag-dot" style={{ background: tagColor(tag.id) }} />
+                <span className="dash-tag-dot" style={{ background: tag.color }} />
                 <span className="dash-tag-name">{tag.name}</span>
                 <button
                   type="button"

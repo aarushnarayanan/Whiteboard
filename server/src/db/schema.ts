@@ -32,6 +32,7 @@ export const tags = pgTable("tags", {
     .notNull()
     .references(() => users.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
+  color: text("color").notNull().default("oklch(60% 0.18 0)"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

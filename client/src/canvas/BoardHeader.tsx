@@ -11,7 +11,6 @@ import {
   type BoardSummary,
 } from "../api/boards";
 import { createTag, listTags, type Tag } from "../api/tags";
-import { tagColor } from "../tagColor";
 
 interface BoardHeaderProps {
   board: BoardSummary;
@@ -303,7 +302,7 @@ export default function BoardHeader({ board, onBack, onRenamed, onDeleted, onDup
                       className={`board-header-tag-option ${tag.id === board.tagId ? "board-header-tag-option-active" : ""}`}
                       onClick={() => handleAssignTag(tag.id)}
                     >
-                      <span className="dash-tag-dot" style={{ background: tagColor(tag.id) }} />
+                      <span className="dash-tag-dot" style={{ background: tag.color }} />
                       {tag.name}
                     </button>
                   ))}
