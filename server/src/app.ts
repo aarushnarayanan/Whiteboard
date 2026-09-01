@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import { authRouter } from "./auth/routes.js";
 import { boardsRouter } from "./boards/routes.js";
+import { tagsRouter } from "./tags/routes.js";
 
 const clientDist = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../client/dist");
 
@@ -20,13 +21,14 @@ export function createApp(): Express {
   // a stale cached `/auth/me` (still 200, still an old logged-in user) can
   // outlive the session that produced it, showing a signed-out browser as
   // signed in even though every other endpoint correctly sees no session.
-  app.use(["/auth", "/boards"], (_req, res, next) => {
+  app.use(["/auth", "/boards", "/tags"], (_req, res, next) => {
     res.set("Cache-Control", "no-store");
     next();
   });
 
   app.use("/auth", authRouter);
   app.use("/boards", boardsRouter);
+  app.use("/tags", tagsRouter);
 
   if (process.env.NODE_ENV === "production") {
     // This one process also serves the built client in production — no

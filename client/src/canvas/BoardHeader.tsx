@@ -6,9 +6,12 @@ import {
   listMembers,
   removeMember,
   renameBoard,
+  setTag,
   type BoardMember,
   type BoardSummary,
 } from "../api/boards";
+import { createTag, listTags, type Tag } from "../api/tags";
+import { tagColor } from "../tagColor";
 
 interface BoardHeaderProps {
   board: BoardSummary;
@@ -16,6 +19,7 @@ interface BoardHeaderProps {
   onRenamed: (title: string) => void;
   onDeleted: () => void;
   onDuplicated: (board: BoardSummary) => void;
+  onTagged: (tagId: string | null) => void;
 }
 
 function BackIcon() {
@@ -79,7 +83,7 @@ function KebabIcon() {
   );
 }
 
-export default function BoardHeader({ board, onBack, onRenamed, onDeleted, onDuplicated }: BoardHeaderProps) {
+export default function BoardHeader({ board, onBack, onRenamed, onDeleted, onDuplicated, onTagged }: BoardHeaderProps) {
   const isOwner = board.role === "owner";
 
   const [titleMenuOpen, setTitleMenuOpen] = useState(false);
@@ -96,6 +100,11 @@ export default function BoardHeader({ board, onBack, onRenamed, onDeleted, onDup
   const [members, setMembers] = useState<BoardMember[] | null>(null);
   const [membersError, setMembersError] = useState<string | null>(null);
 
+  const [tagging, setTagging] = useState(false);
+  const [tags, setTags] = useState<Tag[]>([]);
+  const [newTagName, setNewTagName] = useState("");
+  const [tagError, setTagError] = useState<string | null>(null);
+
   useEffect(() => {
     if (!sharing) return;
     setMembersError(null);
@@ -103,6 +112,41 @@ export default function BoardHeader({ board, onBack, onRenamed, onDeleted, onDup
       .then(setMembers)
       .catch((err) => setMembersError(err instanceof Error ? err.message : "couldn't load members"));
   }, [sharing, board.id]);
+
+  useEffect(() => {
+    if (!tagging) return;
+    setTagError(null);
+    listTags()
+      .then(setTags)
+      .catch((err) => setTagError(err instanceof Error ? err.message : "couldn't load tags"));
+  }, [tagging]);
+
+  const currentTag = tags.find((t) => t.id === board.tagId);
+
+  async function handleAssignTag(tagId: string | null) {
+    try {
+      await setTag(board.id, tagId);
+      onTagged(tagId);
+      setTagging(false);
+    } catch (err) {
+      setTagError(err instanceof Error ? err.message : "couldn't set tag");
+    }
+  }
+
+  async function handleCreateTag(e: FormEvent) {
+    e.preventDefault();
+    const name = newTagName.trim();
+    if (!name) return;
+    setTagError(null);
+    try {
+      const tag = await createTag(name);
+      setTags((prev) => [...prev, tag]);
+      setNewTagName("");
+      await handleAssignTag(tag.id);
+    } catch (err) {
+      setTagError(err instanceof Error ? err.message : "couldn't create tag");
+    }
+  }
 
   async function handleRemoveMember(userId: string) {
     try {
@@ -224,8 +268,14 @@ export default function BoardHeader({ board, onBack, onRenamed, onDeleted, onDup
               <button type="button" disabled={duplicating} onClick={handleDuplicate}>
                 {duplicating ? "Duplicating…" : "Duplicate board"}
               </button>
-              <button type="button" disabled title="Not built yet">
-                Move to space
+              <button
+                type="button"
+                onClick={() => {
+                  setTitleMenuOpen(false);
+                  setTagging(true);
+                }}
+              >
+                {currentTag ? `Tag: ${currentTag.name}` : "Tag board"}
               </button>
               <div className="board-header-menu-divider" />
               <button type="button" disabled title="Not built yet">
@@ -234,6 +284,46 @@ export default function BoardHeader({ board, onBack, onRenamed, onDeleted, onDup
               <button type="button" disabled title="Not built yet">
                 Export as PDF
               </button>
+            </div>
+          </>
+        )}
+
+        {tagging && (
+          <>
+            <div className="board-header-menu-backdrop" onClick={() => setTagging(false)} />
+            <div className="board-header-tag-popover">
+              <span className="board-header-tag-popover-label">Tag this board</span>
+              {tagError && <span className="board-header-share-status">{tagError}</span>}
+              {tags.length > 0 && (
+                <div className="board-header-tag-list">
+                  {tags.map((tag) => (
+                    <button
+                      type="button"
+                      key={tag.id}
+                      className={`board-header-tag-option ${tag.id === board.tagId ? "board-header-tag-option-active" : ""}`}
+                      onClick={() => handleAssignTag(tag.id)}
+                    >
+                      <span className="dash-tag-dot" style={{ background: tagColor(tag.id) }} />
+                      {tag.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {board.tagId && (
+                <button type="button" className="board-header-tag-remove" onClick={() => handleAssignTag(null)}>
+                  Remove tag
+                </button>
+              )}
+              <form className="board-header-tag-form" onSubmit={handleCreateTag}>
+                <input
+                  type="text"
+                  placeholder="New tag name"
+                  value={newTagName}
+                  onChange={(e) => setNewTagName(e.target.value)}
+                  maxLength={40}
+                />
+                <button type="submit">Create</button>
+              </form>
             </div>
           </>
         )}

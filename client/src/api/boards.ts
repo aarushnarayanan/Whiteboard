@@ -7,6 +7,7 @@ export interface BoardSummary {
   updatedAt: string;
   role: BoardRole;
   starred: boolean;
+  tagId: string | null;
 }
 
 async function parseJsonOrThrow(res: Response): Promise<unknown> {
@@ -58,6 +59,16 @@ export async function setStarred(boardId: string, starred: boolean): Promise<voi
     headers: { "content-type": "application/json" },
     credentials: "include",
     body: JSON.stringify({ starred }),
+  });
+  await parseJsonOrThrow(res);
+}
+
+export async function setTag(boardId: string, tagId: string | null): Promise<void> {
+  const res = await fetch(`/boards/${boardId}/tag`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ tagId }),
   });
   await parseJsonOrThrow(res);
 }

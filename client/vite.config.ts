@@ -12,6 +12,7 @@ export default defineConfig({
       },
       '/auth': 'http://localhost:3001',
       '/boards': 'http://localhost:3001',
+      '/tags': 'http://localhost:3001',
     },
   },
 })

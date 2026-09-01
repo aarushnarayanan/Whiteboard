@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { createBoard, listBoards, listTrash, type BoardSummary, type TrashedBoard } from "../api/boards";
+import { deleteTag, listTags, type Tag } from "../api/tags";
 import type { Me } from "../api/auth";
+import { tagColor } from "../tagColor";
 import BoardCard from "./BoardCard";
 import TrashedBoardCard from "./TrashedBoardCard";
 import SettingsPanel from "./SettingsPanel";
@@ -145,6 +147,14 @@ function ListIcon() {
   );
 }
 
+function TagDeleteIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function KebabIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -194,6 +204,8 @@ export default function Dashboard({ me, onOpenBoard, onLogout, onMeUpdated, onAc
   const [searchQuery, setSearchQuery] = useState("");
   const [trashedBoards, setTrashedBoards] = useState<TrashedBoard[]>([]);
   const [trashLoading, setTrashLoading] = useState(false);
+  const [tags, setTags] = useState<Tag[]>([]);
+  const [activeTagId, setActiveTagId] = useState<string | null>(null);
 
   function refreshBoards() {
     return listBoards().then(setBoards);
@@ -201,6 +213,7 @@ export default function Dashboard({ me, onOpenBoard, onLogout, onMeUpdated, onAc
 
   useEffect(() => {
     refreshBoards().finally(() => setLoading(false));
+    listTags().then(setTags);
   }, []);
 
   useEffect(() => {
@@ -239,11 +252,33 @@ export default function Dashboard({ me, onOpenBoard, onLogout, onMeUpdated, onAc
 
   function selectNav(next: Nav) {
     setNav(next);
+    setActiveTagId(null);
     setProfileMenuOpen(false);
   }
 
+  function selectTag(tagId: string) {
+    setNav("home");
+    setActiveTagId(tagId);
+    setProfileMenuOpen(false);
+  }
+
+  async function handleDeleteTag(tag: Tag) {
+    if (!window.confirm(`Delete the "${tag.name}" tag? Boards tagged with it will be untagged.`)) return;
+    try {
+      await deleteTag(tag.id);
+      setTags((prev) => prev.filter((t) => t.id !== tag.id));
+      setBoards((prev) => prev.map((b) => (b.tagId === tag.id ? { ...b, tagId: null } : b)));
+      if (activeTagId === tag.id) setActiveTagId(null);
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "couldn't delete tag");
+    }
+  }
+
+  const activeTag = activeTagId ? tags.find((t) => t.id === activeTagId) : undefined;
+
   const filtered = boards.filter((b) => {
     if (!b.title.toLowerCase().includes(searchQuery.trim().toLowerCase())) return false;
+    if (activeTagId) return b.tagId === activeTagId;
     if (nav === "shared") return b.role !== "owner";
     if (nav === "starred") return b.starred;
     return true;
@@ -316,6 +351,33 @@ export default function Dashboard({ me, onOpenBoard, onLogout, onMeUpdated, onAc
           </button>
         </nav>
 
+        {tags.length > 0 && (
+          <div className="dash-tags-section">
+            <span className="dash-tags-label">Tags</span>
+            {tags.map((tag) => (
+              <div
+                key={tag.id}
+                className={`dash-tag-row ${activeTagId === tag.id ? "dash-tag-row-active" : ""}`}
+                onClick={() => selectTag(tag.id)}
+              >
+                <span className="dash-tag-dot" style={{ background: tagColor(tag.id) }} />
+                <span className="dash-tag-name">{tag.name}</span>
+                <button
+                  type="button"
+                  className="dash-tag-delete"
+                  aria-label={`Delete ${tag.name} tag`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDeleteTag(tag);
+                  }}
+                >
+                  <TagDeleteIcon />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="dash-sidebar-spacer" />
 
         <button
@@ -355,7 +417,7 @@ export default function Dashboard({ me, onOpenBoard, onLogout, onMeUpdated, onAc
 
       <main className="dash-main">
         <div className="dash-topbar">
-          <h1>{NAV_LABELS[nav]}</h1>
+          <h1>{activeTag ? activeTag.name : NAV_LABELS[nav]}</h1>
           {nav !== "settings" && (
             <span className="dash-count">
               {nav === "trash"
@@ -475,6 +537,13 @@ export default function Dashboard({ me, onOpenBoard, onLogout, onMeUpdated, onAc
             !loading &&
             sorted.length === 0 &&
             searchQuery.trim() === "" &&
+            activeTag && <p className="dashboard-empty">No boards tagged "{activeTag.name}" yet.</p>}
+          {nav !== "trash" &&
+            nav !== "settings" &&
+            !loading &&
+            sorted.length === 0 &&
+            searchQuery.trim() === "" &&
+            !activeTag &&
             nav !== "home" && <p className="dashboard-empty">{EMPTY_MESSAGES[nav]}</p>}
         </div>
       </main>

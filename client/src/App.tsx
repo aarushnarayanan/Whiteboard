@@ -84,6 +84,7 @@ function App() {
         onRenamed={(title) => setOpenBoard((b) => (b ? { ...b, title } : b))}
         onDeleted={() => setOpenBoard(null)}
         onDuplicated={setOpenBoard}
+        onTagged={(tagId) => setOpenBoard((b) => (b ? { ...b, tagId } : b))}
       />
       <div className="board-canvas-area">
         <Canvas

@@ -501,4 +501,63 @@ describe("boards routes", () => {
     const ownerBoards = await ownerListRes.json();
     expect(ownerBoards.find((b: { id: string }) => b.id === duplicate.id)).toBeUndefined();
   });
+
+  it("assigns and clears a board's tag, rejects someone else's tag, and clears it when the tag is deleted", async () => {
+    const ownerCookie = await signupAndGetCookie("boards-test-owner14@example.com");
+    const otherCookie = await signupAndGetCookie("boards-test-tag-other14@example.com");
+
+    const createRes = await fetch(`${baseUrl}/boards`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ title: "Board" }),
+    });
+    const board = await createRes.json();
+
+    const tagRes = await fetch(`${baseUrl}/tags`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ name: "Work" }),
+    });
+    const tag = await tagRes.json();
+
+    const otherTagRes = await fetch(`${baseUrl}/tags`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: otherCookie },
+      body: JSON.stringify({ name: "School" }),
+    });
+    const otherTag = await otherTagRes.json();
+
+    const foreignTagAssignRes = await fetch(`${baseUrl}/boards/${board.id}/tag`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ tagId: otherTag.id }),
+    });
+    expect(foreignTagAssignRes.status).toBe(400);
+
+    const assignRes = await fetch(`${baseUrl}/boards/${board.id}/tag`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ tagId: tag.id }),
+    });
+    expect(assignRes.status).toBe(200);
+
+    const listAfterAssignRes = await fetch(`${baseUrl}/boards`, { headers: { cookie: ownerCookie } });
+    const listedAfterAssign = await listAfterAssignRes.json();
+    expect(listedAfterAssign.find((b: { id: string }) => b.id === board.id).tagId).toBe(tag.id);
+
+    await fetch(`${baseUrl}/tags/${tag.id}`, { method: "DELETE", headers: { cookie: ownerCookie } });
+
+    const listAfterDeleteRes = await fetch(`${baseUrl}/boards`, { headers: { cookie: ownerCookie } });
+    const listedAfterDelete = await listAfterDeleteRes.json();
+    const boardAfterDelete = listedAfterDelete.find((b: { id: string }) => b.id === board.id);
+    expect(boardAfterDelete.tagId).toBeNull();
+    expect(boardAfterDelete.role).toBe("owner"); // membership itself is untouched
+
+    const clearRes = await fetch(`${baseUrl}/boards/${board.id}/tag`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ tagId: null }),
+    });
+    expect(clearRes.status).toBe(200);
+  });
 });

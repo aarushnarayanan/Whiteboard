@@ -26,6 +26,15 @@ export const boards = pgTable("boards", {
 
 export const boardRole = pgEnum("board_role", ["owner", "editor", "viewer"]);
 
+export const tags = pgTable("tags", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const boardMembers = pgTable(
   "board_members",
   {
@@ -37,6 +46,7 @@ export const boardMembers = pgTable(
       .references(() => boards.id, { onDelete: "cascade" }),
     role: boardRole("role").notNull(),
     starred: boolean("starred").notNull().default(false),
+    tagId: uuid("tag_id").references(() => tags.id, { onDelete: "set null" }),
   },
   (table) => [primaryKey({ columns: [table.userId, table.boardId] })],
 );

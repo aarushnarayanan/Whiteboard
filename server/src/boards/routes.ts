@@ -2,7 +2,7 @@ import { Router } from "express";
 import { and, eq, isNotNull, isNull, lt } from "drizzle-orm";
 import { asyncHandler } from "../asyncHandler.js";
 import { db } from "../db/index.js";
-import { boardMembers, boards, boardSnapshots, users } from "../db/schema.js";
+import { boardMembers, boards, boardSnapshots, tags, users } from "../db/schema.js";
 import { requireAuth } from "../auth/middleware.js";
 import { loadMergedSnapshot } from "../ws/docStore.js";
 
@@ -71,6 +71,7 @@ boardsRouter.post(
       updatedAt: duplicate.updatedAt,
       role: "owner" as const,
       starred: false,
+      tagId: null,
     });
   }),
 );
@@ -86,6 +87,7 @@ boardsRouter.get(
         updatedAt: boards.updatedAt,
         role: boardMembers.role,
         starred: boardMembers.starred,
+        tagId: boardMembers.tagId,
       })
       .from(boardMembers)
       .innerJoin(boards, eq(boardMembers.boardId, boards.id))
@@ -331,6 +333,41 @@ boardsRouter.patch(
     await db
       .update(boardMembers)
       .set({ starred })
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    res.status(200).json({ ok: true });
+  }),
+);
+
+boardsRouter.patch(
+  "/:id/tag",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+    const { tagId } = req.body ?? {};
+    if (tagId !== null && typeof tagId !== "string") {
+      res.status(400).json({ error: "tagId must be a string or null" });
+      return;
+    }
+
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership) {
+      res.status(404).json({ error: "board not found" });
+      return;
+    }
+
+    if (tagId !== null) {
+      const [tag] = await db.select().from(tags).where(and(eq(tags.id, tagId), eq(tags.userId, req.userId!)));
+      if (!tag) {
+        res.status(400).json({ error: "tag not found" });
+        return;
+      }
+    }
+
+    await db
+      .update(boardMembers)
+      .set({ tagId })
       .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
     res.status(200).json({ ok: true });
   }),

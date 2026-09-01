@@ -43,6 +43,13 @@
       "when": 1787801834658,
       "tag": "0005_curved_network",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787878165889,
+      "tag": "0006_cynical_adam_warlock",
+      "breakpoints": true
     }
   ]
 }
