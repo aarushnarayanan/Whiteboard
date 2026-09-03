@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import {
   Stage,
   Layer,
@@ -15,7 +15,7 @@ import {
 } from "react-konva";
 import type Konva from "konva";
 import type { KonvaEventObject } from "konva/lib/Node";
-import type { Tool } from "./types";
+import type { Tool, ShapeObj } from "./types";
 import { useBoardDoc } from "../board/useBoardDoc";
 import type { Me } from "../api/auth";
 
@@ -45,6 +45,7 @@ const ALL_ANCHORS = [
   "bottom-right",
 ];
 const STICKY_BAND_RATIO = 0.2;
+const NON_RESIZABLE_TYPES = new Set(["line", "arrow", "pen"]);
 
 function emptyTableCells(): string[][] {
   return Array.from({ length: TABLE_ROWS }, () => Array.from({ length: TABLE_COLS }, () => ""));
@@ -88,6 +89,83 @@ function cursorColor(id: string): string {
   return CURSOR_COLORS[h % CURSOR_COLORS.length];
 }
 
+function isEditableFocused(): boolean {
+  const active = document.activeElement;
+  return (
+    active instanceof HTMLElement &&
+    (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable)
+  );
+}
+
+// Line/arrow/pen shapes store `points` as offsets relative to shape.x/y
+// rather than their own width/height, so their world-space bounding box has
+// to be derived from the points instead of read directly off the shape.
+function getShapeBounds(shape: ShapeObj): { x: number; y: number; width: number; height: number } {
+  if (shape.points && shape.points.length >= 2) {
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (let i = 0; i < shape.points.length; i += 2) {
+      xs.push(shape.x + shape.points[i]);
+      ys.push(shape.y + shape.points[i + 1]);
+    }
+    const minX = Math.min(...xs);
+    const minY = Math.min(...ys);
+    return { x: minX, y: minY, width: Math.max(...xs) - minX, height: Math.max(...ys) - minY };
+  }
+  return { x: shape.x, y: shape.y, width: shape.width, height: shape.height };
+}
+
+// The union bounding box of a multi-selection — used to size an invisible
+// "backdrop" rect behind the selected shapes (see the drag-to-move-the-group
+// backdrop in the component) so a gap between selected objects is still
+// draggable, not just the objects themselves.
+function selectionUnionBounds(
+  ids: Set<string>,
+  allShapes: ShapeObj[],
+): { x: number; y: number; width: number; height: number } | null {
+  const selected = allShapes.filter((s) => ids.has(s.id));
+  if (selected.length < 2) return null;
+  const boxes = selected.map(getShapeBounds);
+  const x0 = Math.min(...boxes.map((b) => b.x));
+  const y0 = Math.min(...boxes.map((b) => b.y));
+  const x1 = Math.max(...boxes.map((b) => b.x + b.width));
+  const y1 = Math.max(...boxes.map((b) => b.y + b.height));
+  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+}
+
+// A shape is "in" a frame purely by geometry (fully inside its current
+// bounds) — nothing is stored. Dragging the frame carries these along;
+// resizing it does not.
+function shapesContainedIn(frame: ShapeObj, allShapes: ShapeObj[]): ShapeObj[] {
+  return allShapes.filter((s) => {
+    if (s.id === frame.id || s.type === "frame") return false;
+    const b = getShapeBounds(s);
+    return (
+      b.x >= frame.x &&
+      b.y >= frame.y &&
+      b.x + b.width <= frame.x + frame.width &&
+      b.y + b.height <= frame.y + frame.height
+    );
+  });
+}
+
+// Touch-any-part selects, matching Figma's marquee convention.
+function shapesIntersectingRect(
+  rect: { x0: number; y0: number; x1: number; y1: number },
+  allShapes: ShapeObj[],
+): string[] {
+  const rx0 = Math.min(rect.x0, rect.x1);
+  const ry0 = Math.min(rect.y0, rect.y1);
+  const rx1 = Math.max(rect.x0, rect.x1);
+  const ry1 = Math.max(rect.y0, rect.y1);
+  return allShapes
+    .filter((s) => {
+      const b = getShapeBounds(s);
+      return b.x < rx1 && b.x + b.width > rx0 && b.y < ry1 && b.y + b.height > ry0;
+    })
+    .map((s) => s.id);
+}
+
 interface RemoteCursor {
   name: string;
   color: string;
@@ -125,9 +203,9 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const shapeRefs = useRef(new Map<string, Konva.Node>());
 
   const [size, setSize] = useState({ width: 0, height: 0 });
-  const { shapes, upsertShape, removeShape, getShape, undo, redo, canUndo, canRedo, providerRef } =
+  const { shapes, upsertShape, upsertShapes, removeShape, removeShapes, getShape, undo, redo, canUndo, canRedo, providerRef } =
     useBoardDoc(boardId);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [editingId, setEditingId] = useState<string | null>(null);
   const [scale, setScale] = useState(1);
   const drawingId = useRef<string | null>(null);
@@ -138,6 +216,14 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const erasingRef = useRef(false);
   const [editingCell, setEditingCell] = useState<{ shapeId: string; row: number; col: number } | null>(null);
   const cellEditRef = useRef<HTMLDivElement>(null);
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  const [middleMouseDown, setMiddleMouseDown] = useState(false);
+  const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const dragGroupRef = useRef<{
+    memberIds: string[];
+    start: Map<string, { x: number; y: number }>;
+    leaderStart: { x: number; y: number };
+  } | null>(null);
 
   useImperativeHandle(ref, () => ({
     captureThumbnail: () => {
@@ -218,16 +304,45 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     };
   }, [providerRef, me.id, me.name]);
 
+  // Pan (Space) and pure-selection shortcuts (Escape, Cmd/Ctrl+A) work
+  // regardless of role — panning and inspecting a selection don't mutate
+  // anything, so viewers get them too, unlike the canEdit-gated effect below.
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (isEditableFocused()) return;
+
+      if (e.code === "Space") {
+        e.preventDefault();
+        setSpaceHeld(true);
+        return;
+      }
+      if (e.key === "Escape") {
+        setSelectedIds(new Set());
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        setSelectedIds(new Set(shapes.map((s) => s.id)));
+      }
+    }
+    function handleKeyUp(e: KeyboardEvent) {
+      if (e.code === "Space") setSpaceHeld(false);
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [shapes]);
+
   useEffect(() => {
     if (!canEdit) return;
     function handleKeyDown(e: KeyboardEvent) {
       // Skip whenever an editable field is focused — our own text-edit overlay,
       // the board title rename input, the share popover's email field, etc. —
       // so their native typing/undo/backspace behavior isn't hijacked here.
-      const active = document.activeElement;
-      if (active instanceof HTMLElement && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable)) {
-        return;
-      }
+      if (isEditableFocused()) return;
 
       if (e.metaKey || e.ctrlKey) {
         const key = e.key.toLowerCase();
@@ -241,27 +356,72 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         return;
       }
 
-      if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedIds.size > 0) {
         e.preventDefault();
-        removeShape(selectedId);
-        setSelectedId(null);
+        removeShapes([...selectedIds]);
+        setSelectedIds(new Set());
       }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [canEdit, selectedId, undo, redo, removeShape]);
+  }, [canEdit, selectedIds, undo, redo, removeShapes]);
 
   useEffect(() => {
     const tr = transformerRef.current;
     if (!tr) return;
-    if (!selectedId) {
-      tr.nodes([]);
-      return;
-    }
-    const node = shapeRefs.current.get(selectedId);
-    tr.nodes(node ? [node] : []);
+    const nodes = [...selectedIds]
+      .filter((id) => {
+        const s = shapes.find((sh) => sh.id === id);
+        return s && !NON_RESIZABLE_TYPES.has(s.type);
+      })
+      .map((id) => shapeRefs.current.get(id))
+      .filter((n): n is Konva.Node => !!n);
+    tr.nodes(nodes);
     tr.getLayer()?.batchDraw();
-  }, [selectedId, shapes]);
+  }, [selectedIds, shapes]);
+
+  // Reads each id's current (already-moved, whether by Konva's own
+  // Transformer sync or by moveGroupBy below) node position back into a
+  // committable ShapeObj. Memoized so the Transformer dragend effect right
+  // below can list it as a real dependency instead of re-subscribing every
+  // render.
+  const collectGroupUpdates = useCallback(
+    (ids: Iterable<string>): ShapeObj[] => {
+      const updates: ShapeObj[] = [];
+      for (const id of ids) {
+        const node = shapeRefs.current.get(id);
+        const original = shapes.find((s) => s.id === id);
+        if (!node || !original) continue;
+        const isCentered = original.type === "ellipse" || original.type === "star" || original.type === "hexagon";
+        updates.push({
+          ...original,
+          x: isCentered ? node.x() - original.width / 2 : node.x(),
+          y: isCentered ? node.y() - original.height / 2 : node.y(),
+        });
+      }
+      return updates;
+    },
+    [shapes],
+  );
+
+  // Konva's Transformer already moves every other attached node live when
+  // one of them is dragged (see `_proxyDrag` in konva/lib/shapes/Transformer.js)
+  // — it just never persists anything. This is what commits the result, once,
+  // instead of each shape's own onDragEnd trying to (and fighting Konva's own
+  // sync in the process — see the note in startGroupDragIfNeeded below).
+  useEffect(() => {
+    const tr = transformerRef.current;
+    if (!tr) return;
+    function handleTransformerDragEnd() {
+      if (selectedIds.size <= 1) return;
+      const updates = collectGroupUpdates(selectedIds);
+      if (updates.length > 0) upsertShapes(updates);
+    }
+    tr.on("dragend", handleTransformerDragEnd);
+    return () => {
+      tr.off("dragend", handleTransformerDragEnd);
+    };
+  }, [selectedIds, shapes, upsertShapes, collectGroupUpdates]);
 
   function toStagePoint(stage: Konva.Stage) {
     const pointer = stage.getPointerPosition();
@@ -272,6 +432,152 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 
   function toScreenPoint(stage: Konva.Stage, point: { x: number; y: number }) {
     return stage.getAbsoluteTransform().point(point);
+  }
+
+  function selectShape(id: string, additive: boolean) {
+    setSelectedIds((prev) => {
+      if (!additive) return new Set([id]);
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // A drag "leads" a group when either (a) it's part of an active
+  // multi-selection — the rest of the selection follows — or (b) it's a
+  // frame not part of a multi-selection — whatever's currently sitting
+  // inside its bounds follows. The two never combine: a frame that happens
+  // to be multi-selected uses (a), not its own frame-containment.
+  //
+  // Within (a), anything Konva's Transformer already has attached (every
+  // selected shape except line/arrow/pen, see NON_RESIZABLE_TYPES) is left
+  // alone here — the Transformer moves those live on its own the moment more
+  // than one node is attached to it, and doing it again here would fight
+  // that over the same nodes' positions every frame. This only manually
+  // tracks whatever the Transformer can't: the excluded types always, and
+  // everything else when the leader itself is one of those excluded types
+  // (since then nothing else is moving them at all).
+  function startGroupDragIfNeeded(shape: ShapeObj, leaderNode: Konva.Node) {
+    let memberIds: string[] = [];
+    if (selectedIds.has(shape.id) && selectedIds.size > 1) {
+      const leaderIsTransformerManaged = !NON_RESIZABLE_TYPES.has(shape.type);
+      memberIds = [...selectedIds].filter((id) => {
+        if (id === shape.id) return false;
+        if (!leaderIsTransformerManaged) return true;
+        const member = shapes.find((s) => s.id === id);
+        return member ? NON_RESIZABLE_TYPES.has(member.type) : false;
+      });
+    } else if (shape.type === "frame") {
+      memberIds = shapesContainedIn(shape, shapes).map((s) => s.id);
+    }
+    if (memberIds.length === 0) {
+      dragGroupRef.current = null;
+      return;
+    }
+    const start = new Map<string, { x: number; y: number }>();
+    for (const id of memberIds) {
+      const node = shapeRefs.current.get(id);
+      if (node) start.set(id, { x: node.x(), y: node.y() });
+    }
+    dragGroupRef.current = { memberIds, start, leaderStart: { x: leaderNode.x(), y: leaderNode.y() } };
+  }
+
+  function moveGroupBy(dx: number, dy: number) {
+    const group = dragGroupRef.current;
+    if (!group) return;
+    for (const id of group.memberIds) {
+      const node = shapeRefs.current.get(id);
+      const start = group.start.get(id);
+      if (node && start) {
+        node.x(start.x + dx);
+        node.y(start.y + dy);
+      }
+    }
+    // Keep the resize-handle bounding box tracking live during a group drag
+    // that Konva itself isn't driving (see the backdrop rect below) — it has
+    // no other reason to notice these nodes moved mid-gesture.
+    transformerRef.current?.forceUpdate();
+  }
+
+  function handleGroupDragMove(e: KonvaEventObject<DragEvent>) {
+    const group = dragGroupRef.current;
+    if (!group) return;
+    const node = e.target;
+    moveGroupBy(node.x() - group.leaderStart.x, node.y() - group.leaderStart.y);
+  }
+
+  // Commits the leader's own position, plus (if a group drag was started)
+  // every follower's final position, in one batched write — one undo step
+  // regardless of how many shapes moved.
+  function commitGroupDrag(leaderShape: ShapeObj, leaderNode: Konva.Node, leaderIsCentered: boolean) {
+    const leaderX = leaderIsCentered ? leaderNode.x() - leaderShape.width / 2 : leaderNode.x();
+    const leaderY = leaderIsCentered ? leaderNode.y() - leaderShape.height / 2 : leaderNode.y();
+    const group = dragGroupRef.current;
+    dragGroupRef.current = null;
+    if (!group) {
+      upsertShape({ ...leaderShape, x: leaderX, y: leaderY });
+      return;
+    }
+    const updates = [{ ...leaderShape, x: leaderX, y: leaderY }, ...collectGroupUpdates(group.memberIds)];
+    upsertShapes(updates);
+  }
+
+  // The invisible rect behind a multi-selection (see its JSX below) — lets a
+  // drag started on a *gap* between selected shapes move the whole selection
+  // too, not just a drag started on one of the shapes themselves. Every
+  // selected id is a "member" here (including ones Konva's Transformer also
+  // manages) because this drag never touches the Transformer's own attached
+  // nodes, so nothing else is moving them.
+  function handleSelectionBackdropDragStart(e: KonvaEventObject<DragEvent>) {
+    const memberIds = [...selectedIds];
+    const start = new Map<string, { x: number; y: number }>();
+    for (const id of memberIds) {
+      const node = shapeRefs.current.get(id);
+      if (node) start.set(id, { x: node.x(), y: node.y() });
+    }
+    dragGroupRef.current = { memberIds, start, leaderStart: { x: e.target.x(), y: e.target.y() } };
+  }
+
+  function handleSelectionBackdropDragEnd() {
+    const group = dragGroupRef.current;
+    dragGroupRef.current = null;
+    if (!group) return;
+    const updates = collectGroupUpdates(group.memberIds);
+    if (updates.length > 0) upsertShapes(updates);
+  }
+
+  // A frame's own border is the only thing on it with a real fill/stroke hit
+  // region (see the note on its Rect's fillEnabled below) — a ~12px band
+  // around a 1.5px dashed line, which is a needlessly hard target for "grab
+  // the frame to move it." This is a permanent per-frame counterpart to the
+  // selection backdrop above: an invisible rect over the frame's full
+  // interior, rendered behind the real shapes so anything actually inside
+  // the frame still wins the hit-test at its own pixels, but an empty patch
+  // of interior is now grabbable too. Unlike dragging the border directly
+  // (still handled separately, in the frame's own onDragStart/onDragEnd),
+  // nothing here is a real Konva drag target Konva itself knows about, so
+  // the frame's own node has to be moved manually too, not just its
+  // children — it's just another "member," same as they are.
+  function handleFrameBackdropDragStart(frame: ShapeObj, e: KonvaEventObject<DragEvent>) {
+    const memberIds =
+      selectedIds.has(frame.id) && selectedIds.size > 1
+        ? [...selectedIds].filter((id) => id !== frame.id)
+        : [frame.id, ...shapesContainedIn(frame, shapes).map((s) => s.id)];
+    const start = new Map<string, { x: number; y: number }>();
+    for (const id of memberIds) {
+      const node = shapeRefs.current.get(id);
+      if (node) start.set(id, { x: node.x(), y: node.y() });
+    }
+    dragGroupRef.current = { memberIds, start, leaderStart: { x: e.target.x(), y: e.target.y() } };
+  }
+
+  function handleFrameBackdropDragEnd() {
+    const group = dragGroupRef.current;
+    dragGroupRef.current = null;
+    if (!group) return;
+    const updates = collectGroupUpdates(group.memberIds);
+    if (updates.length > 0) upsertShapes(updates);
   }
 
   useEffect(() => {
@@ -409,8 +715,23 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     const stage = stageRef.current;
     if (!stage) return;
 
+    if (e.evt.button === 1) {
+      setMiddleMouseDown(true);
+      return;
+    }
+
+    const panning = tool === "select" && spaceHeld;
     const clickedOnEmpty = e.target === stage;
-    if (clickedOnEmpty) setSelectedId(null);
+
+    if (!panning) {
+      if (tool === "select" && clickedOnEmpty) {
+        const point = toStagePoint(stage);
+        setMarquee({ x0: point.x, y0: point.y, x1: point.x, y1: point.y });
+        setSelectedIds(new Set());
+      } else if (clickedOnEmpty) {
+        setSelectedIds(new Set());
+      }
+    }
 
     if (!canEdit) return;
 
@@ -467,6 +788,11 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       providerRef.current?.awareness.setLocalStateField("cursor", point);
     }
 
+    if (marquee) {
+      setMarquee((m) => (m ? { ...m, x1: point.x, y1: point.y } : m));
+      return;
+    }
+
     if (tool === "eraser" && erasingRef.current) {
       const pointer = stage.getPointerPosition();
       if (pointer) eraseAt(stage.getIntersection(pointer));
@@ -515,7 +841,16 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   }
 
   function handleStageMouseUp() {
+    setMiddleMouseDown(false);
     erasingRef.current = false;
+
+    if (marquee) {
+      const ids = shapesIntersectingRect(marquee, shapes);
+      setSelectedIds(new Set(ids));
+      setMarquee(null);
+      return;
+    }
+
     if (!drawingId.current) return;
     const id = drawingId.current;
     drawingId.current = null;
@@ -530,7 +865,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       if (shape.width < 2 && shape.height < 2) {
         upsertShape({ ...shape, width: MIN_TEXT_WIDTH, height: MIN_TEXT_HEIGHT, fontSize: DEFAULT_FONT_SIZE });
       }
-      setSelectedId(id);
+      setSelectedIds(new Set([id]));
       setEditingId(id);
       onToolUsed();
       return;
@@ -540,7 +875,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       if (shape.width < 2 && shape.height < 2) {
         upsertShape({ ...shape, width: STICKY_DEFAULT_SIZE, height: STICKY_DEFAULT_SIZE });
       }
-      setSelectedId(id);
+      setSelectedIds(new Set([id]));
       setEditingId(id);
       onToolUsed();
       return;
@@ -550,7 +885,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       if (shape.width < 2 && shape.height < 2) {
         upsertShape({ ...shape, width: TABLE_DEFAULT_WIDTH, height: TABLE_DEFAULT_HEIGHT });
       }
-      setSelectedId(id);
+      setSelectedIds(new Set([id]));
       onToolUsed();
       return;
     }
@@ -562,7 +897,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         onToolUsed();
         return;
       }
-      setSelectedId(id);
+      setSelectedIds(new Set([id]));
       onToolUsed();
       return;
     }
@@ -573,7 +908,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         onToolUsed();
         return;
       }
-      setSelectedId(id);
+      setSelectedIds(new Set([id]));
       onToolUsed();
       return;
     }
@@ -583,11 +918,13 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       onToolUsed();
       return;
     }
-    setSelectedId(id);
+    setSelectedIds(new Set([id]));
     onToolUsed();
   }
 
-  const selectedShape = shapes.find((s) => s.id === selectedId);
+  const singleSelectedId = selectedIds.size === 1 ? [...selectedIds][0] : undefined;
+  const selectedShape = singleSelectedId ? shapes.find((s) => s.id === singleSelectedId) : undefined;
+  const selectionBounds = selectionUnionBounds(selectedIds, shapes);
 
   return (
     <div ref={containerRef} className="canvas-container" onMouseLeave={handleStageMouseLeave}>
@@ -595,13 +932,52 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         ref={stageRef}
         width={size.width}
         height={size.height}
-        draggable={tool === "select"}
+        draggable={tool === "select" && (spaceHeld || middleMouseDown)}
         onWheel={handleWheel}
         onMouseDown={handleStageMouseDown}
         onMouseMove={handleStageMouseMove}
         onMouseUp={handleStageMouseUp}
       >
         <Layer>
+          {selectionBounds && (
+            // Rendered before the real shapes so they always win the hit-test
+            // over this at their own pixels — this only ever catches a drag
+            // started on a gap between selected objects, matching how
+            // dragging the box itself (not its contents) moves a frame.
+            <Rect
+              x={selectionBounds.x}
+              y={selectionBounds.y}
+              width={selectionBounds.width}
+              height={selectionBounds.height}
+              fill="transparent"
+              draggable={canEdit}
+              onDragStart={handleSelectionBackdropDragStart}
+              onDragMove={handleGroupDragMove}
+              onDragEnd={handleSelectionBackdropDragEnd}
+            />
+          )}
+          {shapes
+            .filter((s) => s.type === "frame")
+            .map((frame) => (
+              // Rendered before the real shapes for the same reason as the
+              // selection backdrop above — an object actually inside the
+              // frame always wins the hit-test at its own pixels, this only
+              // ever catches a click/drag on empty interior space.
+              <Rect
+                key={`frame-backdrop-${frame.id}`}
+                x={frame.x}
+                y={frame.y}
+                width={frame.width}
+                height={frame.height}
+                fill="transparent"
+                draggable={canEdit && tool === "select"}
+                onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(frame.id, e.evt.shiftKey)}
+                onTap={() => selectShape(frame.id, false)}
+                onDragStart={(e: KonvaEventObject<DragEvent>) => handleFrameBackdropDragStart(frame, e)}
+                onDragMove={handleGroupDragMove}
+                onDragEnd={handleFrameBackdropDragEnd}
+              />
+            ))}
           {shapes.map((shape) => {
             const isCentered = shape.type === "ellipse" || shape.type === "star" || shape.type === "hexagon";
             const commonProps = {
@@ -616,16 +992,11 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
               stroke: SHAPE_STROKE,
               strokeWidth: 2,
               draggable: canEdit && tool === "select",
-              onClick: () => setSelectedId(shape.id),
-              onTap: () => setSelectedId(shape.id),
-              onDragEnd: (e: KonvaEventObject<DragEvent>) => {
-                const node = e.target;
-                upsertShape({
-                  ...shape,
-                  x: isCentered ? node.x() - shape.width / 2 : node.x(),
-                  y: isCentered ? node.y() - shape.height / 2 : node.y(),
-                });
-              },
+              onClick: (e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey),
+              onTap: () => selectShape(shape.id, false),
+              onDragStart: (e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target),
+              onDragMove: handleGroupDragMove,
+              onDragEnd: (e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target, isCentered),
               onTransformEnd: (e: KonvaEventObject<Event>) => {
                 const node = e.target;
                 const scaleX = node.scaleX();
@@ -702,11 +1073,11 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   pointerLength={10}
                   pointerWidth={10}
                   draggable={canEdit && tool === "select"}
-                  onClick={() => setSelectedId(shape.id)}
-                  onTap={() => setSelectedId(shape.id)}
-                  onDragEnd={(e: KonvaEventObject<DragEvent>) => {
-                    upsertShape({ ...shape, x: e.target.x(), y: e.target.y() });
-                  }}
+                  onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey)}
+                  onTap={() => selectShape(shape.id, false)}
+                  onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
+                  onDragMove={handleGroupDragMove}
+                  onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target, false)}
                 />
               );
             }
@@ -725,66 +1096,81 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   lineJoin="round"
                   tension={0.4}
                   draggable={canEdit && tool === "select"}
-                  onClick={() => setSelectedId(shape.id)}
-                  onTap={() => setSelectedId(shape.id)}
-                  onDragEnd={(e: KonvaEventObject<DragEvent>) => {
-                    upsertShape({ ...shape, x: e.target.x(), y: e.target.y() });
-                  }}
+                  onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey)}
+                  onTap={() => selectShape(shape.id, false)}
+                  onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
+                  onDragMove={handleGroupDragMove}
+                  onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target, false)}
                 />
               );
             }
             if (shape.type === "frame") {
+              // Same reasoning as the sticky note below: the label has to live
+              // inside the same draggable/transformable Group as the box
+              // itself, at local (not shape.x/y-pinned) coordinates, or it
+              // only catches up to a live drag once React re-renders on drop
+              // instead of moving with it in real time.
               return (
-                <Group key={shape.id}>
+                <Group
+                  key={shape.id}
+                  ref={(node: Konva.Node | null) => {
+                    if (node) shapeRefs.current.set(shape.id, node);
+                    else shapeRefs.current.delete(shape.id);
+                  }}
+                  x={shape.x}
+                  y={shape.y}
+                  draggable={canEdit && tool === "select"}
+                  onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey)}
+                  onTap={() => selectShape(shape.id, false)}
+                  onDblClick={() => {
+                    if (!canEdit || tool !== "select") return;
+                    setSelectedIds(new Set([shape.id]));
+                    setEditingId(shape.id);
+                  }}
+                  onDblTap={() => {
+                    if (!canEdit || tool !== "select") return;
+                    setSelectedIds(new Set([shape.id]));
+                    setEditingId(shape.id);
+                  }}
+                  onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
+                  onDragMove={handleGroupDragMove}
+                  onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target, false)}
+                  onTransformEnd={(e: KonvaEventObject<Event>) => {
+                    const node = e.target;
+                    const scaleX = node.scaleX();
+                    const scaleY = node.scaleY();
+                    node.scaleX(1);
+                    node.scaleY(1);
+                    upsertShape({
+                      ...shape,
+                      x: node.x(),
+                      y: node.y(),
+                      width: Math.max(20, shape.width * scaleX),
+                      height: Math.max(20, shape.height * scaleY),
+                    });
+                  }}
+                >
                   <Rect
-                    ref={(node: Konva.Node | null) => {
-                      if (node) shapeRefs.current.set(shape.id, node);
-                      else shapeRefs.current.delete(shape.id);
-                    }}
                     id={shape.id}
-                    x={shape.x}
-                    y={shape.y}
+                    x={0}
+                    y={0}
                     width={shape.width}
                     height={shape.height}
                     stroke="oklch(60% 0.02 250)"
                     strokeWidth={1.5}
                     dash={[6, 4]}
-                    fill="transparent"
-                    draggable={canEdit && tool === "select"}
-                    onClick={() => setSelectedId(shape.id)}
-                    onTap={() => setSelectedId(shape.id)}
-                    onDblClick={() => {
-                      if (!canEdit || tool !== "select") return;
-                      setSelectedId(shape.id);
-                      setEditingId(shape.id);
-                    }}
-                    onDblTap={() => {
-                      if (!canEdit || tool !== "select") return;
-                      setSelectedId(shape.id);
-                      setEditingId(shape.id);
-                    }}
-                    onDragEnd={(e: KonvaEventObject<DragEvent>) => {
-                      upsertShape({ ...shape, x: e.target.x(), y: e.target.y() });
-                    }}
-                    onTransformEnd={(e: KonvaEventObject<Event>) => {
-                      const node = e.target;
-                      const scaleX = node.scaleX();
-                      const scaleY = node.scaleY();
-                      node.scaleX(1);
-                      node.scaleY(1);
-                      upsertShape({
-                        ...shape,
-                        x: node.x(),
-                        y: node.y(),
-                        width: Math.max(20, shape.width * scaleX),
-                        height: Math.max(20, shape.height * scaleY),
-                      });
-                    }}
+                    hitStrokeWidth={12}
+                    // Konva's `fillEnabled` defaults to true regardless of
+                    // whether a `fill` color is actually set — an unset fill
+                    // still hit-tests as a solid rect unless this is
+                    // explicitly turned off, which is what was swallowing
+                    // clicks meant for anything positioned inside the frame.
+                    fillEnabled={false}
                   />
                   {editingId !== shape.id && (
                     <Text
-                      x={shape.x}
-                      y={shape.y - 20}
+                      x={0}
+                      y={-20}
                       text={shape.text || "Frame"}
                       fontSize={13}
                       fontFamily={TEXT_FONT_FAMILY}
@@ -815,11 +1201,11 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                     stroke={SHAPE_STROKE}
                     strokeWidth={2}
                     draggable={canEdit && tool === "select"}
-                    onClick={() => setSelectedId(shape.id)}
-                    onTap={() => setSelectedId(shape.id)}
-                    onDragEnd={(e: KonvaEventObject<DragEvent>) => {
-                      upsertShape({ ...shape, x: e.target.x(), y: e.target.y() });
-                    }}
+                    onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey)}
+                    onTap={() => selectShape(shape.id, false)}
+                    onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
+                    onDragMove={handleGroupDragMove}
+                    onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target, false)}
                     onTransformEnd={(e: KonvaEventObject<Event>) => {
                       const node = e.target;
                       const scaleX = node.scaleX();
@@ -865,16 +1251,16 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                             width={cellW}
                             height={cellH}
                             fill="transparent"
-                            onClick={() => setSelectedId(shape.id)}
-                            onTap={() => setSelectedId(shape.id)}
+                            onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey)}
+                            onTap={() => selectShape(shape.id, false)}
                             onDblClick={() => {
                               if (!canEdit || tool !== "select") return;
-                              setSelectedId(shape.id);
+                              setSelectedIds(new Set([shape.id]));
                               setEditingCell({ shapeId: shape.id, row: r, col: c });
                             }}
                             onDblTap={() => {
                               if (!canEdit || tool !== "select") return;
-                              setSelectedId(shape.id);
+                              setSelectedIds(new Set([shape.id]));
                               setEditingCell({ shapeId: shape.id, row: r, col: c });
                             }}
                           />
@@ -924,21 +1310,21 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   x={shape.x}
                   y={shape.y}
                   draggable={canEdit && tool === "select"}
-                  onClick={() => setSelectedId(shape.id)}
-                  onTap={() => setSelectedId(shape.id)}
+                  onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey)}
+                  onTap={() => selectShape(shape.id, false)}
                   onDblClick={() => {
                     if (!canEdit || tool !== "select") return;
-                    setSelectedId(shape.id);
+                    setSelectedIds(new Set([shape.id]));
                     setEditingId(shape.id);
                   }}
                   onDblTap={() => {
                     if (!canEdit || tool !== "select") return;
-                    setSelectedId(shape.id);
+                    setSelectedIds(new Set([shape.id]));
                     setEditingId(shape.id);
                   }}
-                  onDragEnd={(e: KonvaEventObject<DragEvent>) => {
-                    upsertShape({ ...shape, x: e.target.x(), y: e.target.y() });
-                  }}
+                  onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
+                  onDragMove={handleGroupDragMove}
+                  onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target, false)}
                   onTransformEnd={(e: KonvaEventObject<Event>) => {
                     // Square, always — enforced again here regardless of what
                     // the Transformer's keepRatio/corner-only anchors already
@@ -1025,21 +1411,21 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                 lineHeight={1.2}
                 fill="oklch(25% 0.02 250)"
                 draggable={canEdit && tool === "select"}
-                onClick={() => setSelectedId(shape.id)}
-                onTap={() => setSelectedId(shape.id)}
+                onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey)}
+                onTap={() => selectShape(shape.id, false)}
                 onDblClick={() => {
                   if (!canEdit || tool !== "select") return;
-                  setSelectedId(shape.id);
+                  setSelectedIds(new Set([shape.id]));
                   setEditingId(shape.id);
                 }}
                 onDblTap={() => {
                   if (!canEdit || tool !== "select") return;
-                  setSelectedId(shape.id);
+                  setSelectedIds(new Set([shape.id]));
                   setEditingId(shape.id);
                 }}
-                onDragEnd={(e: KonvaEventObject<DragEvent>) => {
-                  upsertShape({ ...shape, x: e.target.x(), y: e.target.y() });
-                }}
+                onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
+                onDragMove={handleGroupDragMove}
+                onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target, false)}
                 onTransformEnd={(e: KonvaEventObject<Event>) => {
                   const node = e.target;
                   const scaleX = node.scaleX();
@@ -1057,6 +1443,18 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
               />
             );
           })}
+          {marquee && (
+            <Rect
+              x={Math.min(marquee.x0, marquee.x1)}
+              y={Math.min(marquee.y0, marquee.y1)}
+              width={Math.abs(marquee.x1 - marquee.x0)}
+              height={Math.abs(marquee.y1 - marquee.y0)}
+              fill="oklch(55% 0.18 250 / 0.08)"
+              stroke={SHAPE_STROKE}
+              strokeWidth={1}
+              listening={false}
+            />
+          )}
           {canEdit && (
             <Transformer
               ref={transformerRef}

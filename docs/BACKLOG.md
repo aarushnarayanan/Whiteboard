@@ -20,7 +20,7 @@ scope changes while building it, update its detail section, not just the checkbo
 
 - [x] **B1** — Boards have no URL
 - [x] **B2** — Copy link *(scope cut down from the original spec — see note below)*
-- [ ] **B3** — Cannot select more than one object
+- [x] **B3** — Cannot select more than one object
 - [ ] **B4** — Shapes cannot hold text
 - [ ] **B5** — Arrows/lines don't attach to shapes *(ship right after B4)*
 - [ ] **B6** — No images (paste / drag-drop / upload)
@@ -51,6 +51,12 @@ scope changes while building it, update its detail section, not just the checkbo
 - [ ] **X5** — Drop a PDF on the canvas and annotate it
 - [ ] **X6** — Guest access, no account required
 - [ ] **X7** — Tablet and stylus (pressure, palm rejection)
+- [ ] **X8** — Spaces / multi-workspace organization
+
+### Tier 4 — Engineering-lens items (not in the original UX audit)
+
+- [ ] **I1** — Removing a collaborator doesn't revoke their live WebSocket session
+- [ ] **I2** — No database-level access control (Postgres RLS)
 
 ### Build order
 
@@ -58,6 +64,7 @@ scope changes while building it, update its detail section, not just the checkbo
 - [ ] **Block 2 — A real canvas**: B5, B6, B8, F2, F3, F5, F10
 - [ ] **Block 3 — Multiplayer for real**: B7, F7, F8
 - [ ] **Block 4 — Chosen over the incumbents**: B9, F6, X1, X2, X3, X7
+- [ ] **Unscheduled — do opportunistically, not blocking anything above**: I1, I2, X8
 - [ ] **Later**: X4, X5, X6
 
 ### Needs confirmation before work (observed, not conclusively verified)
@@ -1004,6 +1011,69 @@ Pressure-sensitive ink with palm rejection would be the strongest single reason 
 pick this over FigJam. Also a much smaller amount of work than it sounds, once B9 exists.
 
 **Depends on:** B9.
+
+### X8 — Spaces / multi-workspace organization
+
+**Source:** not in the 2026-09-01 UX audit — found in `docs/design_handoff_whiteboard_redesign/`
+(a design spec, largely already implemented for Login/Dashboard/Canvas visuals, but this specific
+piece — a workspace switcher + per-board "Space" grouping with colored-dot sidebar filters, e.g.
+Product/Marketing/Research — was never built). `F6`'s "Organization (optional, larger)" note
+gestures at this same idea in one line; this is that idea's actual spec.
+
+At 9 boards this has no value. It becomes real once a user or team has enough boards that tags
+alone (F6) stop being enough to browse by. Speculative today — no current usage pattern in this
+account suggests it's needed yet.
+
+**Depends on:** F6 (tags) landing first and proving insufficient at scale; would need new schema
+(a `spaces` table + `board.spaceId`, distinct from the existing per-user `tags`).
+
+---
+
+## TIER 4 — ENGINEERING-LENS ITEMS (not in the original UX audit)
+
+The 2026-09-01 audit was explicitly usability/product-only, no source code read. These two surfaced
+from reading `docs/system-design/architecture.md` and the `docs/design_handoff_*` specs during a
+later pass — real gaps, just not ones a product walkthrough would find.
+
+### I1 — Removing a collaborator doesn't revoke their live session
+
+**Severity:** Medium (real access-control gap, narrow blast radius) · **Status:** VERIFIED in code
+(`server/src/ws/roleStub.ts`, noted in `architecture.md` §5's "Known gap").
+
+**Current behavior:** `roleStub.ts` resolves a WebSocket connection's role once, at connect time.
+Removing someone from a board (`DELETE /boards/:id/members/:userId`) only stops *new* connections
+from succeeding — an already-open WebSocket for that user keeps syncing (including receiving
+live edits) until their next reconnect or page refresh, not instantly.
+
+**Why it matters:** "Remove access" should mean access is gone now, not "gone next time they
+happen to reload." This matters more as soon as membership changes more often — which link-based
+access (deferred from B2 into X6) will make more common.
+
+**Required behavior:** Either track open sockets per-user-per-board and force-close on removal, or
+have the sync handler periodically re-check membership (e.g. on each SyncStep1) and drop the
+connection if it's gone.
+
+**Depends on:** Nothing to fix the gap itself; worth doing before X6 ships (more membership churn).
+
+### I2 — No database-level access control (Postgres RLS)
+
+**Severity:** Medium (defense-in-depth, not an active exploit) · **Status:** VERIFIED — confirmed
+via `architecture.md` §9 and a read of `server/src/db/schema.ts`: every table is open at the DB
+level; all access control is enforced in application code (`requireAuth` + a per-route
+`board_members` membership check, repeated in nearly every handler in
+`server/src/boards/routes.ts`).
+
+**Why it matters:** Correct today because every route remembers to check membership — but it's one
+missed check away from a real leak, and there's currently no second layer of defense if a future
+route forgets. Postgres row-level security would make "can this connection see this row" a
+property of the schema, not something every new handler has to get right independently.
+
+**Required behavior:** Add RLS policies on `boards`, `board_members`, `board_updates`,
+`board_snapshots`, `tags` scoped to the authenticated user, with the app's DB role setting a
+session variable (e.g. `app.user_id`) per request/connection for policies to check against.
+
+**Depends on:** Nothing functionally, but it's a real migration + a change to how the app acquires
+DB connections (session-scoped user context) — schedule it, don't bolt it on casually.
 
 ---
 

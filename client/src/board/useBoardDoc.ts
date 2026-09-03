@@ -82,8 +82,31 @@ export function useBoardDoc(boardId: string) {
     });
   }
 
+  function upsertShapes(shapesToUpdate: ShapeObj[]) {
+    const shapesMap = docRef.current!.getMap<Y.Map<unknown>>("shapes");
+    docRef.current!.transact(() => {
+      for (const shape of shapesToUpdate) {
+        let entry = shapesMap.get(shape.id);
+        if (!entry) {
+          entry = new Y.Map();
+          shapesMap.set(shape.id, entry);
+        }
+        for (const [key, value] of Object.entries(shape)) {
+          entry.set(key, value);
+        }
+      }
+    });
+  }
+
   function removeShape(id: string) {
     docRef.current!.getMap("shapes").delete(id);
+  }
+
+  function removeShapes(ids: string[]) {
+    const shapesMap = docRef.current!.getMap("shapes");
+    docRef.current!.transact(() => {
+      for (const id of ids) shapesMap.delete(id);
+    });
   }
 
   // Reads the shared doc directly. `shapes` is a React-state mirror that lags a
@@ -101,5 +124,5 @@ export function useBoardDoc(boardId: string) {
     undoManagerRef.current?.redo();
   }
 
-  return { shapes, upsertShape, removeShape, getShape, undo, redo, canUndo, canRedo, providerRef };
+  return { shapes, upsertShape, upsertShapes, removeShape, removeShapes, getShape, undo, redo, canUndo, canRedo, providerRef };
 }
