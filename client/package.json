@@ -14,6 +14,7 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-konva": "^19.2.5",
+    "react-router-dom": "^7.18.3",
     "y-websocket": "^2.0.4",
     "yjs": "^13.6.20"
   },

@@ -1,22 +1,14 @@
-import { useEffect, useRef, useState } from "react";
-import Canvas, { type CanvasHandle } from "./canvas/Canvas";
-import Toolbar from "./canvas/Toolbar";
-import BoardHeader from "./canvas/BoardHeader";
-import type { Tool } from "./canvas/types";
+import { useEffect, useState } from "react";
+import { Navigate, Route, Routes } from "react-router-dom";
 import LoginForm from "./auth/LoginForm";
 import Dashboard from "./dashboard/Dashboard";
+import BoardRoute from "./board/BoardRoute";
 import { logout, me as fetchMe, type Me } from "./api/auth";
-import { uploadThumbnail, type BoardSummary } from "./api/boards";
 import "./App.css";
 
 function App() {
-  const [tool, setTool] = useState<Tool>("select");
-  const [stickyColor, setStickyColor] = useState("#fff3c4");
   const [me, setMe] = useState<Me | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
-  const [openBoard, setOpenBoard] = useState<BoardSummary | null>(null);
-  const [history, setHistory] = useState({ canUndo: false, canRedo: false });
-  const canvasRef = useRef<CanvasHandle>(null);
 
   useEffect(() => {
     fetchMe()
@@ -40,20 +32,9 @@ function App() {
     return () => window.removeEventListener("pageshow", handlePageShow);
   }, []);
 
-  function handleBack() {
-    if (openBoard && openBoard.role !== "viewer") {
-      const dataUrl = canvasRef.current?.captureThumbnail();
-      if (dataUrl) uploadThumbnail(openBoard.id, dataUrl).catch(() => {});
-    }
-    setOpenBoard(null);
-    setTool("select");
-    setHistory({ canUndo: false, canRedo: false });
-  }
-
   async function handleLogout() {
     await logout();
     setMe(null);
-    setOpenBoard(null);
   }
 
   if (checkingSession) return null;
@@ -62,55 +43,21 @@ function App() {
     return <LoginForm onAuthed={setMe} />;
   }
 
-  if (!openBoard) {
-    return (
-      <Dashboard
-        me={me}
-        onOpenBoard={setOpenBoard}
-        onLogout={handleLogout}
-        onMeUpdated={setMe}
-        onAccountDeleted={() => setMe(null)}
-      />
-    );
-  }
-
-  const canEdit = openBoard.role !== "viewer";
+  const dashboard = (
+    <Dashboard me={me} onLogout={handleLogout} onMeUpdated={setMe} onAccountDeleted={() => setMe(null)} />
+  );
 
   return (
-    <div className="app">
-      <BoardHeader
-        board={openBoard}
-        onBack={handleBack}
-        onRenamed={(title) => setOpenBoard((b) => (b ? { ...b, title } : b))}
-        onDeleted={() => setOpenBoard(null)}
-        onDuplicated={setOpenBoard}
-        onTagged={(tagId) => setOpenBoard((b) => (b ? { ...b, tagId } : b))}
-      />
-      <div className="board-canvas-area">
-        <Canvas
-          ref={canvasRef}
-          boardId={openBoard.id}
-          role={openBoard.role}
-          tool={tool}
-          onToolUsed={() => setTool("select")}
-          onHistoryChange={setHistory}
-          me={me}
-          stickyColor={stickyColor}
-        />
-        {canEdit && (
-          <Toolbar
-            tool={tool}
-            onChange={setTool}
-            canUndo={history.canUndo}
-            canRedo={history.canRedo}
-            onUndo={() => canvasRef.current?.undo()}
-            onRedo={() => canvasRef.current?.redo()}
-            stickyColor={stickyColor}
-            onStickyColorChange={setStickyColor}
-          />
-        )}
-      </div>
-    </div>
+    <Routes>
+      <Route path="/" element={dashboard} />
+      <Route path="/recent" element={dashboard} />
+      <Route path="/starred" element={dashboard} />
+      <Route path="/shared" element={dashboard} />
+      <Route path="/trash" element={dashboard} />
+      <Route path="/settings" element={dashboard} />
+      <Route path="/b/:boardId" element={<BoardRoute me={me} />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 }
 

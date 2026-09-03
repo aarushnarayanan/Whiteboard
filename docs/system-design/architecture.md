@@ -319,48 +319,11 @@ server/drizzle/
 
 ## 9. Not Yet Implemented
 
-The tiered backlog agreed earlier this session, annotated with which currently-real file(s) each item would touch:
+Tracked in [`docs/BACKLOG.md`](../BACKLOG.md) — a hands-on UX/product audit (2026-09-01) superseded
+this section's engineering-file-touchpoint list, which had gone stale as trash/starred/search/list-
+view/settings/duplicate/tags all shipped. `BACKLOG.md` has the current, checkable running list plus
+full repro/acceptance-criteria detail per item.
 
-**Tier 2 — Collaboration polish**
-- Real invite emails (invite silently requires the invitee already has an account, no email sent) → `server/src/boards/routes.ts` (`POST /:id/members`), can now reuse `server/src/email/sendEmail.ts` (built for password reset) instead of needing a new mechanism
-
-**Tier 3 — Expanded canvas toolset**
-- Sticky notes (+ color flyout) → `client/src/canvas/types.ts`, `Canvas.tsx`, `Toolbar.tsx`
-- Pen/freehand drawing → same three files, needs a `points`-based shape type
-- Eraser → `Canvas.tsx`
-- Additional shapes (line, arrow/connector, star, hexagon) → `types.ts`, `Canvas.tsx`, `Toolbar.tsx`'s existing (currently disabled) shapes-flyout entries
-- Frame tool → `types.ts`, `Canvas.tsx`, `Toolbar.tsx`
-- Image upload/embed → `types.ts`, `Canvas.tsx`, `Toolbar.tsx`, plus server-side storage (the unused R2_* env vars in `.env.example` suggest Cloudflare R2 was the intended target)
-- Table tool → `types.ts`, `Canvas.tsx`, `Toolbar.tsx`
-
-**Tier 4 — Dashboard organization**
-- Search boards → `client/src/dashboard/Dashboard.tsx` (currently a disabled input)
-- Trash/soft-delete → `server/src/db/schema.ts` (`deletedAt` column), `boards/routes.ts`, `client/src/dashboard/Dashboard.tsx`
-- Starred boards → `server/src/db/schema.ts` (`starred` column), `boards/routes.ts`, `client/src/dashboard/BoardCard.tsx` (star button already exists, disabled)
-- List view toggle → `client/src/dashboard/Dashboard.tsx` (grid button already wired, list is a no-op)
-- Templates → `client/src/dashboard/Dashboard.tsx`, needs template source data
-- Spaces (needs schema work) → `server/src/db/schema.ts` (new `space_id`/table), `boards/routes.ts`, `client/src/dashboard/Dashboard.tsx`
-- Workspace switcher (multi-workspace) → new schema entirely, `client/src/dashboard/Dashboard.tsx`
-
-**Tier 5 — Canvas power features**
-- Layering / z-order — assign any object (shape, text, sticky note, image, etc.) to a numbered layer; layer 0 is the base, each higher layer renders on top of the ones below it → `client/src/canvas/types.ts` (needs a `layer`/`zIndex` field on `ShapeObj`), `Canvas.tsx` (sort shapes by layer before rendering each `Layer`'s children, plus "send to back"/"bring to front"/"send backward"/"bring forward" actions), new UI to assign/change an object's layer (context menu or the Inspector panel below)
-- Inspector panel (position/fill/stroke/corner-radius/shadow editing) → `client/src/canvas/types.ts` (needs style fields on `ShapeObj`), new `Inspector.tsx` component, `App.tsx` layout
-- Comments (pins + threads) → new server table + routes, new client component, `client/src/canvas/BoardHeader.tsx`'s existing (disabled) comment toggle
-- Version history (timeline, named versions, activity log, restore) → new server event-log table, `server/src/ws/compaction.ts`/`docStore.ts` for restore semantics, new `HistoryPanel.tsx`, `BoardHeader.tsx`'s existing (disabled) history toggle
-- Present/play mode → `client/src/canvas/BoardHeader.tsx` (icon exists, disabled), `Canvas.tsx`
-
-**Tier 6 — Auth & account**
-- Settings page → new client route/component; `Dashboard.tsx`'s profile menu already has a disabled "Settings" entry
-
-**Tier 7 — Board management extras**
-- Duplicate board → `server/src/boards/routes.ts` (new route), `client/src/dashboard/BoardCard.tsx` / `canvas/BoardHeader.tsx` (menu items already exist, disabled)
-- Move to space → depends on Tier 4's Spaces work
-- Export as PNG/PDF → `client/src/canvas/Canvas.tsx` (has `captureThumbnail` already, PNG export is close; PDF needs a new dependency), `BoardHeader.tsx` (menu items already exist, disabled)
-- Board settings menu item → `client/src/canvas/BoardHeader.tsx` (currently disabled, unclear what it would even contain beyond existing rename/delete)
-
-**Tier 8 — Infra/security**
-- Postgres RLS → `server/src/db/schema.ts` / new migration; currently all access control is enforced in application code (`requireAuth` + per-route membership checks), not at the database level
-
-**Tier 9 — Low-value decorative**
-- Minimap → `client/src/canvas/Canvas.tsx`
-- Terms/Privacy static pages → new client routes; links already exist as inert text in `LoginForm.tsx`
+Postgres RLS is not covered there (it's an infra item, not a UX one) and remains open: currently all
+access control is enforced in application code (`requireAuth` + per-route membership checks), not at
+the database level.

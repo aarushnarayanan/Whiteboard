@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { createBoard, listBoards, listTrash, type BoardSummary, type TrashedBoard } from "../api/boards";
 import { deleteTag, listTags, type Tag } from "../api/tags";
 import type { Me } from "../api/auth";
@@ -8,7 +9,6 @@ import SettingsPanel from "./SettingsPanel";
 
 interface DashboardProps {
   me: Me;
-  onOpenBoard: (board: BoardSummary) => void;
   onLogout: () => void;
   onMeUpdated: (me: Me) => void;
   onAccountDeleted: () => void;
@@ -168,6 +168,19 @@ type Nav = "home" | "recent" | "shared" | "starred" | "trash" | "settings";
 type SortBy = "edited" | "name";
 type View = "grid" | "list";
 
+const NAV_PATHS: Record<Nav, string> = {
+  home: "/",
+  recent: "/recent",
+  shared: "/shared",
+  starred: "/starred",
+  trash: "/trash",
+  settings: "/settings",
+};
+
+const PATH_TO_NAV: Record<string, Nav> = Object.fromEntries(
+  (Object.entries(NAV_PATHS) as [Nav, string][]).map(([nav, path]) => [path, nav]),
+);
+
 const NAV_LABELS: Record<Nav, string> = {
   home: "Home",
   recent: "Recent",
@@ -192,19 +205,23 @@ function initials(name: string): string {
   return chars.join("").toUpperCase();
 }
 
-export default function Dashboard({ me, onOpenBoard, onLogout, onMeUpdated, onAccountDeleted }: DashboardProps) {
+export default function Dashboard({ me, onLogout, onMeUpdated, onAccountDeleted }: DashboardProps) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const nav = PATH_TO_NAV[location.pathname] ?? "home";
+
   const [boards, setBoards] = useState<BoardSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [nav, setNav] = useState<Nav>("home");
-  const [sortBy, setSortBy] = useState<SortBy>("edited");
+  const [sortBy, setSortBy] = useState<SortBy>(searchParams.get("sort") === "name" ? "name" : "edited");
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [view, setView] = useState<View>("grid");
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState(searchParams.get("q") ?? "");
   const [trashedBoards, setTrashedBoards] = useState<TrashedBoard[]>([]);
   const [trashLoading, setTrashLoading] = useState(false);
   const [tags, setTags] = useState<Tag[]>([]);
-  const [activeTagId, setActiveTagId] = useState<string | null>(null);
+  const [activeTagId, setActiveTagId] = useState<string | null>(searchParams.get("tag"));
 
   function refreshBoards() {
     return listBoards().then(setBoards);
@@ -223,9 +240,17 @@ export default function Dashboard({ me, onOpenBoard, onLogout, onMeUpdated, onAc
       .finally(() => setTrashLoading(false));
   }, [nav]);
 
+  useEffect(() => {
+    const next: Record<string, string> = {};
+    if (searchQuery.trim()) next.q = searchQuery;
+    if (activeTagId) next.tag = activeTagId;
+    if (sortBy !== "edited") next.sort = sortBy;
+    setSearchParams(next, { replace: true });
+  }, [searchQuery, activeTagId, sortBy, location.pathname, setSearchParams]);
+
   async function handleCreate() {
     const board = await createBoard("Untitled board");
-    onOpenBoard(board);
+    navigate(`/b/${board.id}`);
   }
 
   function handleRenamed(boardId: string, title: string) {
@@ -250,13 +275,13 @@ export default function Dashboard({ me, onOpenBoard, onLogout, onMeUpdated, onAc
   }
 
   function selectNav(next: Nav) {
-    setNav(next);
+    navigate(NAV_PATHS[next]);
     setActiveTagId(null);
     setProfileMenuOpen(false);
   }
 
   function selectTag(tagId: string) {
-    setNav("home");
+    navigate(NAV_PATHS.home);
     setActiveTagId(tagId);
     setProfileMenuOpen(false);
   }
@@ -520,7 +545,7 @@ export default function Dashboard({ me, onOpenBoard, onLogout, onMeUpdated, onAc
                   key={board.id}
                   board={board}
                   layout={view}
-                  onOpenBoard={onOpenBoard}
+                  onOpenBoard={(board) => navigate(`/b/${board.id}`)}
                   onRenamed={handleRenamed}
                   onDeleted={handleDeleted}
                   onStarToggled={handleStarToggled}

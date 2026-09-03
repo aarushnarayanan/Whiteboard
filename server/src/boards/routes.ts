@@ -129,6 +129,47 @@ boardsRouter.get(
   }),
 );
 
+boardsRouter.get(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+
+    const [board] = await db
+      .select({
+        id: boards.id,
+        title: boards.title,
+        thumbnail: boards.thumbnail,
+        updatedAt: boards.updatedAt,
+        deletedAt: boards.deletedAt,
+      })
+      .from(boards)
+      .where(eq(boards.id, boardId));
+    if (!board || board.deletedAt !== null) {
+      res.status(404).json({ error: "board not found" });
+      return;
+    }
+
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership) {
+      res.status(403).json({ error: "no access" });
+      return;
+    }
+
+    res.json({
+      id: board.id,
+      title: board.title,
+      thumbnail: board.thumbnail ? `data:image/png;base64,${board.thumbnail.toString("base64")}` : null,
+      updatedAt: board.updatedAt,
+      role: membership.role,
+      starred: membership.starred,
+      tagId: membership.tagId,
+    });
+  }),
+);
+
 boardsRouter.post(
   "/:id/thumbnail",
   asyncHandler(async (req, res) => {

@@ -252,6 +252,35 @@ describe("boards routes", () => {
     expect(outsiderListRes.status).toBe(404);
   });
 
+  it("fetches a single board for a member, 403s an outsider, and 404s a missing or deleted board", async () => {
+    const ownerCookie = await signupAndGetCookie("boards-test-owner7b@example.com");
+    const outsiderCookie = await signupAndGetCookie("boards-test-outsider7b@example.com");
+
+    const createRes = await fetch(`${baseUrl}/boards`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ title: "Solo board" }),
+    });
+    const board = await createRes.json();
+
+    const ownerGetRes = await fetch(`${baseUrl}/boards/${board.id}`, { headers: { cookie: ownerCookie } });
+    expect(ownerGetRes.status).toBe(200);
+    const fetched = await ownerGetRes.json();
+    expect(fetched).toMatchObject({ id: board.id, title: "Solo board", role: "owner" });
+
+    const outsiderGetRes = await fetch(`${baseUrl}/boards/${board.id}`, { headers: { cookie: outsiderCookie } });
+    expect(outsiderGetRes.status).toBe(403);
+
+    const missingRes = await fetch(`${baseUrl}/boards/00000000-0000-0000-0000-000000000000`, {
+      headers: { cookie: ownerCookie },
+    });
+    expect(missingRes.status).toBe(404);
+
+    await fetch(`${baseUrl}/boards/${board.id}`, { method: "DELETE", headers: { cookie: ownerCookie } });
+    const deletedRes = await fetch(`${baseUrl}/boards/${board.id}`, { headers: { cookie: ownerCookie } });
+    expect(deletedRes.status).toBe(404);
+  });
+
   it("lets the owner remove a member, rejects a non-owner's attempt, and refuses to remove the owner", async () => {
     const ownerCookie = await signupAndGetCookie("boards-test-owner8@example.com");
     const editorCookie = await signupAndGetCookie("boards-test-editor8@example.com");

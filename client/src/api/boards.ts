@@ -24,6 +24,20 @@ export async function listBoards(): Promise<BoardSummary[]> {
   return (await parseJsonOrThrow(res)) as BoardSummary[];
 }
 
+export class BoardAccessError extends Error {
+  status: 404 | 403;
+  constructor(status: 404 | 403) {
+    super(status === 404 ? "board not found" : "no access to this board");
+    this.status = status;
+  }
+}
+
+export async function getBoard(boardId: string): Promise<BoardSummary> {
+  const res = await fetch(`/boards/${boardId}`, { credentials: "include" });
+  if (res.status === 404 || res.status === 403) throw new BoardAccessError(res.status);
+  return (await parseJsonOrThrow(res)) as BoardSummary;
+}
+
 export async function createBoard(title: string): Promise<BoardSummary> {
   const res = await fetch("/boards", {
     method: "POST",

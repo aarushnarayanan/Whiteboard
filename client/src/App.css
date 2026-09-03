@@ -1496,6 +1496,44 @@
   font-size: 13.5px;
 }
 
+/* Board route error states (not found / no access) */
+
+.board-access-error {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 24px;
+}
+
+.board-access-error h1 {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.board-access-error p {
+  color: var(--ink-400);
+  font-size: 13.5px;
+  max-width: 360px;
+}
+
+.board-access-error a {
+  margin-top: 10px;
+  padding: 9px 16px;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+}
+.board-access-error a:hover {
+  background: var(--accent-hover);
+}
+
 /* Board grid + cards */
 
 .board-grid {
