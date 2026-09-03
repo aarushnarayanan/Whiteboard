@@ -93,6 +93,7 @@ export default function BoardHeader({ board, onBack, onRenamed, onDeleted, onDup
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
 
   const [sharing, setSharing] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
   const [shareEmail, setShareEmail] = useState("");
   const [shareRole, setShareRole] = useState<"editor" | "viewer">("editor");
   const [shareStatus, setShareStatus] = useState<string | null>(null);
@@ -167,6 +168,12 @@ export default function BoardHeader({ board, onBack, onRenamed, onDeleted, onDup
     } catch {
       setTitleDraft(board.title);
     }
+  }
+
+  function handleCopyLink() {
+    navigator.clipboard.writeText(`${window.location.origin}/b/${board.id}`);
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 1500);
   }
 
   async function handleShare(e: FormEvent) {
@@ -361,6 +368,13 @@ export default function BoardHeader({ board, onBack, onRenamed, onDeleted, onDup
           <>
             <div className="board-header-menu-backdrop" onClick={() => setSharing(false)} />
             <form className="board-header-share-form" onSubmit={handleShare}>
+              <div className="board-header-share-row">
+                <button type="button" onClick={handleCopyLink}>
+                  Copy link
+                </button>
+                {linkCopied && <span className="board-header-share-status">Link copied</span>}
+              </div>
+
               <label className="board-header-share-label">
                 Invite by email
                 <input

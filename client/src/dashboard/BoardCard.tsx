@@ -106,6 +106,7 @@ export default function BoardCard({
   const isOwner = board.role === "owner";
 
   const [menuOpen, setMenuOpen] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [shareEmail, setShareEmail] = useState("");
   const [shareRole, setShareRole] = useState<"editor" | "viewer">("editor");
@@ -114,6 +115,12 @@ export default function BoardCard({
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState(board.title);
   const [renameError, setRenameError] = useState<string | null>(null);
+
+  function handleCopyLink() {
+    navigator.clipboard.writeText(`${window.location.origin}/b/${board.id}`);
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 1200);
+  }
 
   async function handleShare(e: FormEvent) {
     e.preventDefault();
@@ -204,6 +211,9 @@ export default function BoardCard({
               }}
             >
               Rename
+            </button>
+            <button type="button" onClick={handleCopyLink}>
+              {linkCopied ? "Copied!" : "Copy link"}
             </button>
             {isOwner && (
               <button

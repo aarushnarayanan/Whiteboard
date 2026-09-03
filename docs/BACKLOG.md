@@ -18,8 +18,8 @@ scope changes while building it, update its detail section, not just the checkbo
 
 ### Tier 1 — Blockers (nothing real happens on the board until these ship)
 
-- [ ] **B1** — Boards have no URL
-- [ ] **B2** — Sharing is email-invite only; no link sharing *(depends on B1)*
+- [x] **B1** — Boards have no URL
+- [x] **B2** — Copy link *(scope cut down from the original spec — see note below)*
 - [ ] **B3** — Cannot select more than one object
 - [ ] **B4** — Shapes cannot hold text
 - [ ] **B5** — Arrows/lines don't attach to shapes *(ship right after B4)*
@@ -134,7 +134,21 @@ currently "Untitled board" (see F6).
 
 ### B2 — Sharing is email-invite only; no link sharing
 
-**Severity:** BLOCKER · **Status:** VERIFIED
+**Severity:** BLOCKER · **Status:** SHIPPED IN PART — scope cut down, see below
+
+**Scope decision (post-B1, overrides the "Required behavior" below):** the link-access-tier system
+this issue originally called for (Restricted / Anyone-with-the-link Viewer / Editor, auto-granting
+access to whoever holds the link) was deliberately **not** built. Access stays strictly
+invite-only, Google-Docs-"Restricted"-style — a link only works for someone who already has an
+explicit `board_members` row. Reasoning: "Anyone with the link" is supposed to eventually serve
+anonymous, no-account visitors too, which is X6's job (X6 already depends on B2). Building the
+tier system now, before anonymous viewing exists, would ship a permission model whose actual
+target audience still can't use it. Standing project memory:
+`whiteboard-link-access-philosophy`. **What shipped:** just the "Copy link" button (board header
+Share panel + dashboard board-card menu), copying the `/b/:boardId` URL for people who already
+have access — a convenience, not a new access grant. **What's still open, folded into X6 instead of
+staying a separate B2 remainder:** the Restricted/Viewer/Editor selector, auto-join-on-visit, and
+true anonymous read-only access — build these together when X6 is picked up, not before.
 
 **Current behavior:** The Share panel is: an email input, a role dropdown defaulting to "Editor",
 an Invite button, and a "People with access" list showing the owner. No Copy link button, no
@@ -965,6 +979,11 @@ email, no password.
 Account creation is where group adoption dies — one person in a five-person group won't sign up,
 and the group falls back to whatever everyone already has. Removing that step is worth more than
 most features on this list.
+
+**Now also includes B2's deferred scope:** the Restricted/Anyone-with-the-link (Viewer/Editor)
+access-tier selector and auto-join-on-visit were cut from B2 specifically to be designed together
+with this item — build the link-access-tier system and guest identity as one coherent piece here,
+not as two separate passes. See the scope note on B2 and `whiteboard-link-access-philosophy`.
 
 **Depends on:** B1 and B2.
 
