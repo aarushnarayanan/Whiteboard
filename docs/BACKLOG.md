@@ -21,8 +21,8 @@ scope changes while building it, update its detail section, not just the checkbo
 - [x] **B1** — Boards have no URL
 - [x] **B2** — Copy link *(scope cut down from the original spec — see note below)*
 - [x] **B3** — Cannot select more than one object
-- [ ] **B4** — Shapes cannot hold text
-- [ ] **B5** — Arrows/lines don't attach to shapes *(ship right after B4)*
+- [x] **B4** — Shapes cannot hold text
+- [x] **B5** — Arrows/lines don't attach to shapes *(ship right after B4)*
 - [ ] **B6** — No images (paste / drag-drop / upload)
 - [ ] **B7** — No comments
 - [ ] **B8** — Nothing can leave the board (export)

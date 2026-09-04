@@ -26,6 +26,13 @@ export type ShapeType =
   | "table"
   | "pen";
 
+export type ConnectorAnchor = "top" | "right" | "bottom" | "left";
+
+export interface ConnectorBinding {
+  shapeId: string;
+  anchor: ConnectorAnchor;
+}
+
 export interface ShapeObj {
   id: string;
   type: ShapeType;
@@ -41,4 +48,8 @@ export interface ShapeObj {
   color?: string;
   /** table cell text, fixed 3x3 grid. */
   cells?: string[][];
+  /** line/arrow only: when set, that endpoint tracks the bound shape's anchor
+   *  instead of the absolute point stored in x/points. */
+  startBind?: ConnectorBinding;
+  endBind?: ConnectorBinding;
 }

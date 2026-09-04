@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { Fragment, forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import {
   Stage,
   Layer,
@@ -12,10 +12,11 @@ import {
   Arrow,
   Star,
   RegularPolygon,
+  Circle,
 } from "react-konva";
 import Konva from "konva";
 import type { KonvaEventObject } from "konva/lib/Node";
-import type { Tool, ShapeObj } from "./types";
+import type { Tool, ShapeObj, ConnectorAnchor, ConnectorBinding } from "./types";
 import { useBoardDoc } from "../board/useBoardDoc";
 import type { Me } from "../api/auth";
 
@@ -141,6 +142,90 @@ function fitShapeFontSize(text: string, innerWidth: number, innerHeight: number)
   return SHAPE_TEXT_MIN_FONT;
 }
 
+const CONNECTOR_ANCHORS: ConnectorAnchor[] = ["top", "right", "bottom", "left"];
+const CONNECTOR_SNAP_DISTANCE = 20;
+const CONNECTOR_TARGET_EXCLUDED_TYPES = new Set(["line", "arrow", "pen"]);
+
+// Bounding-box edge midpoints — works uniformly for every shape type (and an
+// ellipse's top/bottom/left/right anchors happen to sit exactly on its own
+// curve). `liveNode`, when given, is preferred over the shape's own
+// (possibly stale, mid-drag) x/y — this is what lets re-routing track a
+// dragged target live instead of only after it commits.
+function anchorPoint(shape: ShapeObj, anchor: ConnectorAnchor, liveNode?: Konva.Node): { x: number; y: number } {
+  const x = liveNode ? liveNode.x() : shape.x;
+  const y = liveNode ? liveNode.y() : shape.y;
+  switch (anchor) {
+    case "top":
+      return { x: x + shape.width / 2, y };
+    case "bottom":
+      return { x: x + shape.width / 2, y: y + shape.height };
+    case "left":
+      return { x, y: y + shape.height / 2 };
+    case "right":
+      return { x: x + shape.width, y: y + shape.height / 2 };
+  }
+}
+
+function nearestAnchor(shape: ShapeObj, point: { x: number; y: number }): ConnectorAnchor {
+  let best = CONNECTOR_ANCHORS[0];
+  let bestDist = Infinity;
+  for (const anchor of CONNECTOR_ANCHORS) {
+    const p = anchorPoint(shape, anchor);
+    const dist = Math.hypot(p.x - point.x, p.y - point.y);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = anchor;
+    }
+  }
+  return best;
+}
+
+// A connection dot sits exactly on a shape's boundary — the one place
+// Konva's fill hit-testing is least reliable (sub-pixel rounding can put a
+// click "just outside" the shape at exactly its own edge). Snapping to
+// start a connector by distance-to-anchor, scanned fresh across every shape
+// rather than relying on whatever was hit-tested as "hovered," sidesteps
+// that entirely.
+function findNearbyAnchor(
+  allShapes: ShapeObj[],
+  point: { x: number; y: number },
+): { shape: ShapeObj; anchor: ConnectorAnchor } | null {
+  let best: { shape: ShapeObj; anchor: ConnectorAnchor; dist: number } | null = null;
+  for (const s of allShapes) {
+    if (CONNECTOR_TARGET_EXCLUDED_TYPES.has(s.type)) continue;
+    for (const anchor of CONNECTOR_ANCHORS) {
+      const p = anchorPoint(s, anchor);
+      const dist = Math.hypot(p.x - point.x, p.y - point.y);
+      if (dist <= CONNECTOR_SNAP_DISTANCE && (!best || dist < best.dist)) {
+        best = { shape: s, anchor, dist };
+      }
+    }
+  }
+  return best ? { shape: best.shape, anchor: best.anchor } : null;
+}
+
+// The single source of truth for "where does this connector actually draw
+// right now" — a bound endpoint tracks its target shape's anchor; an unbound
+// one falls back to the stored absolute point exactly as before. Arrows
+// drawn before binding existed simply have no startBind/endBind, so they
+// fall through to that same unbound path with no migration needed.
+function resolveConnectorEndpoints(
+  shape: ShapeObj,
+  allShapes: ShapeObj[],
+  shapeRefs: Map<string, Konva.Node>,
+): { x1: number; y1: number; x2: number; y2: number } {
+  const [rx1, ry1, rx2, ry2] = shape.points ?? [0, 0, 0, 0];
+  function resolve(bind: ConnectorBinding | undefined, fallback: { x: number; y: number }) {
+    if (!bind) return fallback;
+    const target = allShapes.find((s) => s.id === bind.shapeId);
+    if (!target) return fallback;
+    return anchorPoint(target, bind.anchor, shapeRefs.get(bind.shapeId));
+  }
+  const start = resolve(shape.startBind, { x: shape.x + rx1, y: shape.y + ry1 });
+  const end = resolve(shape.endBind, { x: shape.x + rx2, y: shape.y + ry2 });
+  return { x1: start.x, y1: start.y, x2: end.x, y2: end.y };
+}
+
 // Line/arrow/pen shapes store `points` as offsets relative to shape.x/y
 // rather than their own width/height, so their world-space bounding box has
 // to be derived from the points instead of read directly off the shape.
@@ -263,6 +348,10 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [middleMouseDown, setMiddleMouseDown] = useState(false);
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  // The shape currently under the pointer while the line/arrow tool is
+  // active — drives the connection-point dots and lets a new connector bind
+  // on release.
+  const [hoveredConnectTarget, setHoveredConnectTarget] = useState<string | null>(null);
   const dragGroupRef = useRef<{
     memberIds: string[];
     start: Map<string, { x: number; y: number }>;
@@ -385,6 +474,38 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     };
   }, [shapes]);
 
+  // Deletes shapes the same as removeShape/removeShapes, but first detaches
+  // any connector bound to one of them — writing its last resolved position
+  // into x/points so it stays right where it was instead of collapsing to
+  // the origin or vanishing. Route any *user-initiated* deletion through
+  // this instead of the raw primitives (brand-new degenerate shapes cleaned
+  // up mid-draw don't need it — nothing could be bound to them yet).
+  const deleteShapesAndDetachConnectors = useCallback(
+    (ids: string[]) => {
+      const idSet = new Set(ids);
+      const detachUpdates: ShapeObj[] = [];
+      for (const s of shapes) {
+        if (s.type !== "line" && s.type !== "arrow") continue;
+        const startBound = s.startBind && idSet.has(s.startBind.shapeId);
+        const endBound = s.endBind && idSet.has(s.endBind.shapeId);
+        if (!startBound && !endBound) continue;
+        const { x1, y1, x2, y2 } = resolveConnectorEndpoints(s, shapes, shapeRefs.current);
+        detachUpdates.push({
+          ...s,
+          startBind: startBound ? undefined : s.startBind,
+          endBind: endBound ? undefined : s.endBind,
+          x: x1,
+          y: y1,
+          points: [0, 0, x2 - x1, y2 - y1],
+        });
+      }
+      if (detachUpdates.length > 0) upsertShapes(detachUpdates);
+      if (ids.length === 1) removeShape(ids[0]);
+      else removeShapes(ids);
+    },
+    [shapes, upsertShapes, removeShape, removeShapes],
+  );
+
   useEffect(() => {
     if (!canEdit) return;
     function handleKeyDown(e: KeyboardEvent) {
@@ -407,7 +528,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
 
       if ((e.key === "Delete" || e.key === "Backspace") && selectedIds.size > 0) {
         e.preventDefault();
-        removeShapes([...selectedIds]);
+        deleteShapesAndDetachConnectors([...selectedIds]);
         setSelectedIds(new Set());
         return;
       }
@@ -431,7 +552,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [canEdit, selectedIds, undo, redo, removeShapes, editingId, shapes]);
+  }, [canEdit, selectedIds, undo, redo, editingId, shapes, deleteShapesAndDetachConnectors]);
 
   useEffect(() => {
     const tr = transformerRef.current;
@@ -545,6 +666,24 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     dragGroupRef.current = { memberIds, start, leaderStart: { x: leaderNode.x(), y: leaderNode.y() } };
   }
 
+  // Any connector bound to `shapeId` gets its rendered points recomputed
+  // from the shape's current (live, mid-drag included) position — called
+  // from every place a shape's node can move, so a bound arrow tracks its
+  // target live instead of only snapping into place on commit.
+  function rerouteConnectors(shapeId: string) {
+    let changed = false;
+    for (const s of shapes) {
+      if (s.type !== "line" && s.type !== "arrow") continue;
+      if (s.startBind?.shapeId !== shapeId && s.endBind?.shapeId !== shapeId) continue;
+      const node = shapeRefs.current.get(s.id) as Konva.Line | undefined;
+      if (!node) continue;
+      const { x1, y1, x2, y2 } = resolveConnectorEndpoints(s, shapes, shapeRefs.current);
+      node.points([x1, y1, x2, y2]);
+      changed = true;
+    }
+    if (changed) stageRef.current?.batchDraw();
+  }
+
   function moveGroupBy(dx: number, dy: number) {
     const group = dragGroupRef.current;
     if (!group) return;
@@ -554,6 +693,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       if (node && start) {
         node.x(start.x + dx);
         node.y(start.y + dy);
+        rerouteConnectors(id);
       }
     }
     // Keep the resize-handle bounding box tracking live during a group drag
@@ -562,7 +702,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     transformerRef.current?.forceUpdate();
   }
 
-  function handleGroupDragMove(e: KonvaEventObject<DragEvent>) {
+  function handleGroupDragMove(e: KonvaEventObject<DragEvent>, leaderId?: string) {
+    if (leaderId) rerouteConnectors(leaderId);
     const group = dragGroupRef.current;
     if (!group) return;
     const node = e.target;
@@ -642,6 +783,65 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     if (updates.length > 0) upsertShapes(updates);
   }
 
+  // What's under the pointer right now, independent of the arrow/line-tool
+  // hover state above — used while rebinding an *existing* connector's
+  // endpoint, which happens with the select tool active.
+  function shapeIdAtPointer(): string | null {
+    const stage = stageRef.current;
+    if (!stage) return null;
+    const pointer = stage.getPointerPosition();
+    if (!pointer) return null;
+    const target = stage.getIntersection(pointer);
+    return target?.id() || null;
+  }
+
+  // Live visual feedback while dragging one of a selected connector's two
+  // endpoint handles — updates just that connector's own rendered points,
+  // same "read the live node, don't wait for commit" principle used
+  // everywhere else in this file.
+  function handleConnectorHandleDragMove(shape: ShapeObj, which: "start" | "end", e: KonvaEventObject<DragEvent>) {
+    const node = shapeRefs.current.get(shape.id) as Konva.Line | undefined;
+    if (!node) return;
+    const { x1, y1, x2, y2 } = resolveConnectorEndpoints(shape, shapes, shapeRefs.current);
+    const points = which === "start" ? [e.target.x(), e.target.y(), x2, y2] : [x1, y1, e.target.x(), e.target.y()];
+    node.points(points);
+    node.getLayer()?.batchDraw();
+  }
+
+  function handleConnectorHandleDragEnd(shape: ShapeObj, which: "start" | "end", e: KonvaEventObject<DragEvent>) {
+    const droppedX = e.target.x();
+    const droppedY = e.target.y();
+    const { x1, y1, x2, y2 } = resolveConnectorEndpoints(shape, shapes, shapeRefs.current);
+    const otherPoint = which === "start" ? { x: x2, y: y2 } : { x: x1, y: y1 };
+
+    const targetId = shapeIdAtPointer();
+    const targetShape = targetId
+      ? shapes.find((s) => s.id === targetId && s.id !== shape.id && !CONNECTOR_TARGET_EXCLUDED_TYPES.has(s.type))
+      : undefined;
+
+    let newPoint: { x: number; y: number };
+    let newBind: ConnectorBinding | undefined;
+    if (targetShape) {
+      const anchor = nearestAnchor(targetShape, { x: droppedX, y: droppedY });
+      newPoint = anchorPoint(targetShape, anchor);
+      newBind = { shapeId: targetShape.id, anchor };
+    } else {
+      newPoint = { x: droppedX, y: droppedY };
+      newBind = undefined;
+    }
+
+    const startPoint = which === "start" ? newPoint : otherPoint;
+    const endPoint = which === "start" ? otherPoint : newPoint;
+    upsertShape({
+      ...shape,
+      startBind: which === "start" ? newBind : shape.startBind,
+      endBind: which === "end" ? newBind : shape.endBind,
+      x: startPoint.x,
+      y: startPoint.y,
+      points: [0, 0, endPoint.x - startPoint.x, endPoint.y - startPoint.y],
+    });
+  }
+
   useEffect(() => {
     if (!editingId) return;
     const el = textEditRef.current;
@@ -669,12 +869,12 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     const text = el.innerText.replace(/\n$/, "");
     setEditingId(null);
 
-    if (LABELABLE_SHAPE_TYPES.has(shape.type)) {
-      // A blank shape (or frame caption) is still a meaningful object —
-      // unlike free-standing text, never auto-delete it for being empty. Its
-      // size is user-controlled via resize handles, never derived from text
-      // content: typing more shrinks the label to fit (fitShapeFontSize) or
-      // clips it, it never stretches the shape.
+    if (LABELABLE_SHAPE_TYPES.has(shape.type) || shape.type === "line" || shape.type === "arrow") {
+      // A blank shape (or frame caption, or connector annotation) is still a
+      // meaningful object — unlike free-standing text, never auto-delete it
+      // for being empty. Its size is user-controlled via resize handles,
+      // never derived from text content: typing more shrinks the label to
+      // fit (fitShapeFontSize) or clips it, it never stretches the shape.
       upsertShape({ ...shape, text });
       return;
     }
@@ -682,7 +882,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     const currentScale = stageRef.current?.scaleX() ?? scale;
     const height = el.offsetHeight / currentScale;
     if (text.trim().length === 0) {
-      removeShape(id);
+      deleteShapesAndDetachConnectors([id]);
       return;
     }
     const width = el.offsetWidth / currentScale;
@@ -767,7 +967,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   function eraseAt(target: Konva.Node | null | undefined) {
     if (!target || target === stageRef.current) return;
     const id = target.id();
-    if (id) removeShape(id);
+    if (id) deleteShapesAndDetachConnectors([id]);
   }
 
   function handleStageMouseDown(e: KonvaEventObject<MouseEvent>) {
@@ -801,6 +1001,36 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     }
 
     if (tool === "select") return;
+
+    // Starting a connector on a shape's revealed connection point binds that
+    // end — the only case where drawing is allowed to begin on top of a
+    // shape rather than empty canvas. Computed fresh here (not from the
+    // hoveredConnectTarget state, which both lags a render behind the actual
+    // event and depends on fill hit-testing that's least reliable exactly at
+    // a shape's boundary, where the dots sit) via a plain distance check
+    // against every shape's anchors.
+    if (tool === "line" || tool === "arrow") {
+      const point = toStagePoint(stage);
+      const nearby = findNearbyAnchor(shapes, point);
+      if (nearby) {
+        const anchorPos = anchorPoint(nearby.shape, nearby.anchor);
+        const id = crypto.randomUUID();
+        drawStart.current = anchorPos;
+        drawingId.current = id;
+        upsertShape({
+          id,
+          type: tool,
+          x: anchorPos.x,
+          y: anchorPos.y,
+          width: 0,
+          height: 0,
+          points: [0, 0, 0, 0],
+          startBind: { shapeId: nearby.shape.id, anchor: nearby.anchor },
+        });
+        return;
+      }
+    }
+
     if (!clickedOnEmpty) return;
 
     const point = toStagePoint(stage);
@@ -845,6 +1075,19 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     if (now - lastCursorSent.current > CURSOR_THROTTLE_MS) {
       lastCursorSent.current = now;
       providerRef.current?.awareness.setLocalStateField("cursor", point);
+    }
+
+    if (tool === "line" || tool === "arrow") {
+      // Runs regardless of whether a connector is already being drawn — this
+      // is what tells release-time binding what's under the pointer, and
+      // drives the connection-point dots before a drag even starts.
+      const pointer = stage.getPointerPosition();
+      const hit = pointer ? stage.getIntersection(pointer) : null;
+      const id = hit?.id() || null;
+      const hoveredShape = id ? shapes.find((s) => s.id === id) : undefined;
+      setHoveredConnectTarget(hoveredShape && !CONNECTOR_TARGET_EXCLUDED_TYPES.has(hoveredShape.type) ? hoveredShape.id : null);
+    } else if (hoveredConnectTarget) {
+      setHoveredConnectTarget(null);
     }
 
     if (marquee) {
@@ -955,6 +1198,22 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         removeShape(id);
         onToolUsed();
         return;
+      }
+      // Releasing over a shape binds the end — more lenient than starting
+      // one (which needs to land on a specific connection dot): anywhere
+      // over the shape counts, snapped to its nearest anchor. Computed
+      // fresh (not from the hoveredConnectTarget state — same staleness
+      // reasoning as the start case above), combining a real hit-test
+      // (covers the shape's interior) with the same anchor-proximity check
+      // (covers landing right on its edge, where hit-testing is weakest).
+      const currentEnd = { x: shape.x + x2, y: shape.y + y2 };
+      const hitId = shapeIdAtPointer();
+      const hitShape = hitId ? shapes.find((s) => s.id === hitId && !CONNECTOR_TARGET_EXCLUDED_TYPES.has(s.type)) : undefined;
+      const endTarget = hitShape
+        ? { shape: hitShape, anchor: nearestAnchor(hitShape, currentEnd) }
+        : findNearbyAnchor(shapes, currentEnd);
+      if (endTarget) {
+        upsertShape({ ...shape, endBind: { shapeId: endTarget.shape.id, anchor: endTarget.anchor } });
       }
       setSelectedIds(new Set([id]));
       onToolUsed();
@@ -1102,7 +1361,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                     setEditingId(shape.id);
                   }}
                   onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
-                  onDragMove={handleGroupDragMove}
+                  onDragMove={(e: KonvaEventObject<DragEvent>) => handleGroupDragMove(e, shape.id)}
                   onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target)}
                   onTransformEnd={(e: KonvaEventObject<Event>) => {
                     const node = e.target;
@@ -1139,27 +1398,95 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             }
             if (shape.type === "line" || shape.type === "arrow") {
               const LineOrArrow = shape.type === "arrow" ? Arrow : Line;
+              const { x1, y1, x2, y2 } = resolveConnectorEndpoints(shape, shapes, shapeRefs.current);
+              const isBound = !!(shape.startBind || shape.endBind);
+              const midX = (x1 + x2) / 2;
+              const midY = (y1 + y2) / 2;
+              let labelWidth = 0;
+              if (shape.text) {
+                const probe = new Konva.Text({ text: shape.text, fontSize: 12, fontFamily: TEXT_FONT_FAMILY });
+                labelWidth = probe.width() + 12;
+              }
+
               return (
-                <LineOrArrow
-                  key={shape.id}
-                  id={shape.id}
-                  x={shape.x}
-                  y={shape.y}
-                  points={shape.points ?? [0, 0, 0, 0]}
-                  stroke={SHAPE_STROKE}
-                  fill={SHAPE_STROKE}
-                  strokeWidth={2.5}
-                  hitStrokeWidth={16}
-                  lineCap="round"
-                  pointerLength={10}
-                  pointerWidth={10}
-                  draggable={canEdit && tool === "select"}
-                  onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey)}
-                  onTap={() => selectShape(shape.id, false)}
-                  onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
-                  onDragMove={handleGroupDragMove}
-                  onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target)}
-                />
+                <Fragment key={shape.id}>
+                  <LineOrArrow
+                    ref={(node: Konva.Node | null) => {
+                      if (node) shapeRefs.current.set(shape.id, node);
+                      else shapeRefs.current.delete(shape.id);
+                    }}
+                    id={shape.id}
+                    x={0}
+                    y={0}
+                    points={[x1, y1, x2, y2]}
+                    stroke={SHAPE_STROKE}
+                    fill={SHAPE_STROKE}
+                    strokeWidth={2.5}
+                    hitStrokeWidth={16}
+                    lineCap="round"
+                    pointerLength={10}
+                    pointerWidth={10}
+                    draggable={canEdit && tool === "select" && !isBound}
+                    onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey)}
+                    onTap={() => selectShape(shape.id, false)}
+                    onDblClick={() => {
+                      if (!canEdit || tool !== "select") return;
+                      setSelectedIds(new Set([shape.id]));
+                      setEditingId(shape.id);
+                    }}
+                    onDblTap={() => {
+                      if (!canEdit || tool !== "select") return;
+                      setSelectedIds(new Set([shape.id]));
+                      setEditingId(shape.id);
+                    }}
+                    onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
+                    onDragMove={(e: KonvaEventObject<DragEvent>) => handleGroupDragMove(e, shape.id)}
+                    onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target)}
+                  />
+                  {editingId !== shape.id && shape.text && (
+                    <Group listening={false}>
+                      <Rect x={midX - labelWidth / 2} y={midY - 10} width={labelWidth} height={20} fill="#ffffff" cornerRadius={3} />
+                      <Text
+                        x={midX - labelWidth / 2}
+                        y={midY - 10}
+                        width={labelWidth}
+                        height={20}
+                        text={shape.text}
+                        fontSize={12}
+                        fontFamily={TEXT_FONT_FAMILY}
+                        align="center"
+                        verticalAlign="middle"
+                        fill="oklch(25% 0.02 250)"
+                      />
+                    </Group>
+                  )}
+                  {canEdit && tool === "select" && singleSelectedId === shape.id && (
+                    <>
+                      <Circle
+                        x={x1}
+                        y={y1}
+                        radius={6}
+                        fill="#ffffff"
+                        stroke={SHAPE_STROKE}
+                        strokeWidth={2}
+                        draggable
+                        onDragMove={(e: KonvaEventObject<DragEvent>) => handleConnectorHandleDragMove(shape, "start", e)}
+                        onDragEnd={(e: KonvaEventObject<DragEvent>) => handleConnectorHandleDragEnd(shape, "start", e)}
+                      />
+                      <Circle
+                        x={x2}
+                        y={y2}
+                        radius={6}
+                        fill="#ffffff"
+                        stroke={SHAPE_STROKE}
+                        strokeWidth={2}
+                        draggable
+                        onDragMove={(e: KonvaEventObject<DragEvent>) => handleConnectorHandleDragMove(shape, "end", e)}
+                        onDragEnd={(e: KonvaEventObject<DragEvent>) => handleConnectorHandleDragEnd(shape, "end", e)}
+                      />
+                    </>
+                  )}
+                </Fragment>
               );
             }
             if (shape.type === "pen") {
@@ -1180,7 +1507,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey)}
                   onTap={() => selectShape(shape.id, false)}
                   onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
-                  onDragMove={handleGroupDragMove}
+                  onDragMove={(e: KonvaEventObject<DragEvent>) => handleGroupDragMove(e, shape.id)}
                   onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target)}
                 />
               );
@@ -1214,7 +1541,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                     setEditingId(shape.id);
                   }}
                   onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
-                  onDragMove={handleGroupDragMove}
+                  onDragMove={(e: KonvaEventObject<DragEvent>) => handleGroupDragMove(e, shape.id)}
                   onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target)}
                   onTransformEnd={(e: KonvaEventObject<Event>) => {
                     const node = e.target;
@@ -1285,7 +1612,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                     onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey)}
                     onTap={() => selectShape(shape.id, false)}
                     onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
-                    onDragMove={handleGroupDragMove}
+                    onDragMove={(e: KonvaEventObject<DragEvent>) => handleGroupDragMove(e, shape.id)}
                     onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target)}
                     onTransformEnd={(e: KonvaEventObject<Event>) => {
                       const node = e.target;
@@ -1404,7 +1731,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                     setEditingId(shape.id);
                   }}
                   onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
-                  onDragMove={handleGroupDragMove}
+                  onDragMove={(e: KonvaEventObject<DragEvent>) => handleGroupDragMove(e, shape.id)}
                   onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target)}
                   onTransformEnd={(e: KonvaEventObject<Event>) => {
                     // Square, always — enforced again here regardless of what
@@ -1505,7 +1832,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   setEditingId(shape.id);
                 }}
                 onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
-                onDragMove={handleGroupDragMove}
+                onDragMove={(e: KonvaEventObject<DragEvent>) => handleGroupDragMove(e, shape.id)}
                 onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target)}
                 onTransformEnd={(e: KonvaEventObject<Event>) => {
                   const node = e.target;
@@ -1536,6 +1863,27 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
               listening={false}
             />
           )}
+          {(tool === "line" || tool === "arrow") &&
+            hoveredConnectTarget &&
+            (() => {
+              const target = shapes.find((s) => s.id === hoveredConnectTarget);
+              if (!target) return null;
+              return CONNECTOR_ANCHORS.map((anchor) => {
+                const p = anchorPoint(target, anchor);
+                return (
+                  <Circle
+                    key={anchor}
+                    x={p.x}
+                    y={p.y}
+                    radius={5}
+                    fill="#ffffff"
+                    stroke={SHAPE_STROKE}
+                    strokeWidth={1.5}
+                    listening={false}
+                  />
+                );
+              });
+            })()}
           {canEdit && (
             <Transformer
               ref={transformerRef}
@@ -1591,6 +1939,35 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   fontSize: 14 * scale,
                   background: "transparent",
                   outline: "none",
+                }}
+                onBlur={() => commitTextEdit(editingShape.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") e.currentTarget.blur();
+                }}
+              >
+                {editingShape.text ?? ""}
+              </div>
+            );
+          }
+
+          if (editingShape.type === "line" || editingShape.type === "arrow") {
+            const { x1, y1, x2, y2 } = resolveConnectorEndpoints(editingShape, shapes, shapeRefs.current);
+            const pos = toScreenPoint(stage, { x: (x1 + x2) / 2, y: (y1 + y2) / 2 });
+            return (
+              <div
+                key={editingShape.id}
+                ref={textEditRef}
+                className="text-edit-overlay"
+                contentEditable
+                suppressContentEditableWarning
+                style={{
+                  left: pos.x,
+                  top: pos.y,
+                  transform: "translate(-50%, -50%)",
+                  minWidth: 40 * scale,
+                  fontSize: 12 * scale,
+                  textAlign: "center",
+                  background: "#ffffff",
                 }}
                 onBlur={() => commitTextEdit(editingShape.id)}
                 onKeyDown={(e) => {
