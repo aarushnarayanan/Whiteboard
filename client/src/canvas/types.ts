@@ -24,7 +24,11 @@ export type ShapeType =
   | "sticky"
   | "frame"
   | "table"
-  | "pen";
+  | "pen"
+  // An image's bytes live in R2, at a key the server derives from
+  // (boardId, shape.id) — so there's deliberately no `src` field here. Nothing
+  // to store, nothing to rewrite when a board is duplicated.
+  | "image";
 
 export type ConnectorAnchor = "top" | "right" | "bottom" | "left";
 

@@ -23,9 +23,9 @@ scope changes while building it, update its detail section, not just the checkbo
 - [x] **B3** — Cannot select more than one object
 - [x] **B4** — Shapes cannot hold text
 - [x] **B5** — Arrows/lines don't attach to shapes *(ship right after B4)*
-- [ ] **B6** — No images (paste / drag-drop / upload)
+- [x] **B6** — No images (paste / drag-drop / upload)
 - [ ] **B7** — No comments
-- [ ] **B8** — Nothing can leave the board (export)
+- [x] **B8** — Nothing can leave the board (export) *(scope cut down to PNG — see note below)*
 - [ ] **B9** — No responsive layout (blocker for the student/mobile audience specifically)
 
 ### Tier 2 — Friction (people work around these, and will resent every one)
@@ -57,6 +57,8 @@ scope changes while building it, update its detail section, not just the checkbo
 
 - [ ] **I1** — Removing a collaborator doesn't revoke their live WebSocket session
 - [ ] **I2** — No database-level access control (Postgres RLS)
+- [ ] **I3** — Orphaned R2 image objects are never reclaimed
+- [ ] **I4** — R2 misconfiguration isn't caught until the first upload
 
 ### Build order
 
@@ -326,6 +328,32 @@ here. A "hover shape, drag from edge handle" quick-connector gesture is a later 
 
 ### B6 — No images
 
+**Severity:** BLOCKER · **Status:** SHIPPED
+
+**What shipped:** all three entry paths (paste, drag-and-drop, toolbar file picker), converging on
+one `insertImageFiles` in `Canvas.tsx`. Images are ordinary shapes — marquee-selectable, group-
+draggable, frame-contained, deletable, undoable — resizing aspect-locked to corner handles.
+
+**Storage decision (answers this issue's "decide storage now" note):** private Cloudflare R2
+bucket, **proxied through Express**, not presigned URLs and not base64 in the doc. `POST/GET
+/boards/:id/images/:shapeId` re-run the same `board_members` check as every other route, so
+removing a collaborator cuts off their image access immediately rather than whenever a signed URL
+would have expired. Chosen over presigned direct-to-R2 because it also removes bucket CORS,
+signed-URL refresh, and the tainted-canvas failure mode that would have broken B8's PNG export.
+Cost: image bytes cross Railway rather than R2's free egress — revisit if that ever bites.
+
+**No new table, and no `src` field on the shape.** The object key is derived from
+`(boardId, shapeId)` — both already `crypto.randomUUID()` — so the client never supplies a key and
+duplicating a board needs no rewriting inside the Yjs doc (the server copies the R2 prefix instead).
+Serving user SVGs from our own origin needs `Content-Security-Policy: default-src 'none'; sandbox`
+on image responses, or a script inside an uploaded SVG runs against the session cookie.
+
+**Deferred:** alt text (no consumer until F6/an a11y layer exists), a real upload-progress
+percentage (`fetch` can't report it; the placeholder is indeterminate), free-aspect resize with a
+modifier (F2's territory), and a drop-target highlight. Storage reclamation is **I3**.
+
+**Original issue below.**
+
 **Severity:** BLOCKER · **Status:** VERIFIED
 
 **Current behavior:** The image toolbar button's accessible label is literally "Not built yet".
@@ -407,6 +435,26 @@ silently destroy the discussion.
 ---
 
 ### B8 — Nothing can leave the board
+
+**Severity:** BLOCKER · **Status:** SHIPPED IN PART — PNG only, see below
+
+**Scope decision (overrides the priority list below):** only PNG shipped — of the whole board and
+of the current selection, at 1x/2x, on a white or transparent background, named
+`"{board title} — {date}.png"`, from the board-title menu or Cmd/Ctrl+Shift+E, available to
+viewers. Deliberately deferred: **PNG of a single frame** (wants F10's frame panel), **PDF of all
+frames** (needs a real frame order — that's X3's job, and it adds a client PDF dependency; the
+header's "Export as PDF" button stays disabled), **SVG** (Konva has no SVG export, so this is a
+rewrite of the render path, not an export feature), and **stickies-to-CSV / whole-board JSON**
+(cheap, just not picked up in this pass — CSV can't carry the "author" column the spec asks for
+anyway, since shapes record no author).
+
+**Two bugs fixed on the way past,** both from routing the board thumbnail and PNG export through
+one `renderStageToDataURL`: thumbnails computed their crop from raw `x`/`width` rather than
+`getShapeBounds`, so any board containing a connector or pen stroke was cropped through it; and
+they captured whatever was on screen, baking in transformer handles and other people's live
+cursors.
+
+**Original issue below.**
 
 **Severity:** BLOCKER · **Status:** VERIFIED
 
@@ -1074,6 +1122,45 @@ session variable (e.g. `app.user_id`) per request/connection for policies to che
 
 **Depends on:** Nothing functionally, but it's a real migration + a change to how the app acquires
 DB connections (session-scoped user context) — schedule it, don't bolt it on casually.
+
+### I3 — Orphaned R2 image objects are never reclaimed
+
+**Severity:** Low (cost, not correctness) · **Status:** KNOWN, introduced deliberately by B6
+
+**Current behavior:** deleting a single image shape removes it from the board but leaves its object
+in R2. Only permanently deleting the whole board clears the prefix (`deleteBoardImages` in
+`server/src/boards/routes.ts`). A board that has had images added and removed repeatedly
+accumulates objects nothing references, indefinitely — and invisibly, since nothing counts or
+reports them.
+
+**Why it was left:** eager per-shape deletion has to reference-count against undo (a deleted shape
+returns with the same id, so its bytes must still be there) and against duplicated boards, for no
+user-visible benefit.
+
+**Required behavior when storage cost starts to matter:** a sweep that lists a board's R2 prefix,
+diffs it against the image shape ids in the current snapshot, and deletes the difference. Correct
+without any reference counting, and cheap enough to run periodically or at board close.
+
+**Depends on:** Nothing.
+
+### I4 — R2 misconfiguration isn't caught until the first upload
+
+**Severity:** Medium (deploy-time footgun) · **Status:** KNOWN, introduced deliberately by B6
+
+**Current behavior:** `server/src/r2.ts` builds its S3 client lazily and reads `R2_ACCOUNT_ID`,
+`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` on first use. Lazy is correct for the
+test suite (which runs with none of them set), but it means a missing or wrong value in production
+lets the server boot perfectly cleanly and then fail at the first image upload, as a 500 in front
+of a user.
+
+**Why it matters:** this project has already lost time to exactly this failure shape once, with
+`APP_URL` and Google OAuth — a config error that only surfaces on the unhappy path, in prod.
+
+**Required behavior:** check the four `R2_*` vars are present and non-empty at startup and log a
+loud warning (or refuse to boot) if not. Keeps the lazy client; turns a runtime surprise into a
+deploy-time one. Worth doing before images ship to production.
+
+**Depends on:** Nothing. Small.
 
 ---
 

@@ -589,4 +589,61 @@ describe("boards routes", () => {
     });
     expect(clearRes.status).toBe(200);
   });
+
+  // Covers only the checks that return before reaching R2, so these run without
+  // R2 credentials the same way the rest of the suite does. The paths that do
+  // touch R2 are verified by hand against a real bucket.
+  it("guards image upload and read on membership, role, id shape, and content type", async () => {
+    const ownerCookie = await signupAndGetCookie("boards-test-img-owner@example.com");
+    const viewerCookie = await signupAndGetCookie("boards-test-img-viewer@example.com");
+    const outsiderCookie = await signupAndGetCookie("boards-test-img-outsider@example.com");
+
+    const createRes = await fetch(`${baseUrl}/boards`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ title: "Image board" }),
+    });
+    const board = await createRes.json();
+
+    await fetch(`${baseUrl}/boards/${board.id}/members`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ email: "boards-test-img-viewer@example.com", role: "viewer" }),
+    });
+
+    const shapeId: string = crypto.randomUUID();
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const upload = (cookie: string, id: string = shapeId, contentType = "image/png", body = png) =>
+      fetch(`${baseUrl}/boards/${board.id}/images/${id}`, {
+        method: "POST",
+        headers: { "content-type": contentType, cookie },
+        body,
+      });
+
+    // A non-member can neither add nor read an image — the point of proxying
+    // reads through here rather than handing out signed URLs.
+    expect((await upload(outsiderCookie)).status).toBe(404);
+    const outsiderReadRes = await fetch(`${baseUrl}/boards/${board.id}/images/${shapeId}`, {
+      headers: { cookie: outsiderCookie },
+    });
+    expect(outsiderReadRes.status).toBe(404);
+
+    // A viewer reads the board, so a viewer reads its images — but can't add any.
+    expect((await upload(viewerCookie)).status).toBe(403);
+
+    // The shape id is interpolated into the object key, so it must be a UUID.
+    // Percent-encoded, because a literal "../.." is normalized away by the URL
+    // parser long before it reaches the router — encoding it is what actually
+    // puts a traversal string into req.params for the guard to reject.
+    expect((await upload(ownerCookie, "%2e%2e%2f%2e%2e%2fetc%2fpasswd")).status).toBe(400);
+    const badIdReadRes = await fetch(`${baseUrl}/boards/${board.id}/images/not-a-uuid`, {
+      headers: { cookie: ownerCookie },
+    });
+    expect(badIdReadRes.status).toBe(400);
+
+    // Anything outside the allowlist never becomes a Buffer, so it's rejected
+    // before the membership lookup, let alone before R2.
+    expect((await upload(ownerCookie, shapeId, "application/pdf")).status).toBe(400);
+    expect((await upload(ownerCookie, shapeId, "image/png", new Uint8Array(0))).status).toBe(400);
+  });
 });

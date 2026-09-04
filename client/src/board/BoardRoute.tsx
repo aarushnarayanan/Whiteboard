@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import Canvas, { type CanvasHandle } from "../canvas/Canvas";
+import Canvas, { isEditableFocused, type CanvasHandle, type ExportPngOptions } from "../canvas/Canvas";
 import Toolbar from "../canvas/Toolbar";
 import BoardHeader from "../canvas/BoardHeader";
 import type { Tool } from "../canvas/types";
@@ -19,6 +19,7 @@ export default function BoardRoute({ me }: { me: Me }) {
   const [tool, setTool] = useState<Tool>("select");
   const [stickyColor, setStickyColor] = useState("#fff3c4");
   const [history, setHistory] = useState({ canUndo: false, canRedo: false });
+  const [selectionCount, setSelectionCount] = useState(0);
   const canvasRef = useRef<CanvasHandle>(null);
 
   useEffect(() => {
@@ -29,6 +30,36 @@ export default function BoardRoute({ me }: { me: Me }) {
       .then((board) => setState({ status: "ready", board }))
       .catch((err) => setState({ status: "error", kind: err instanceof BoardAccessError ? err.status : 404 }));
   }, [boardId]);
+
+  // Lives here rather than in Canvas because the filename comes from the board
+  // title, which the canvas has no reason to know.
+  const handleExportPng = useCallback(
+    (options: ExportPngOptions): string | null => {
+      const dataUrl = canvasRef.current?.exportPNG(options) ?? null;
+      if (!dataUrl || state.status !== "ready") return null;
+
+      const date = new Date().toISOString().slice(0, 10);
+      const link = document.createElement("a");
+      link.href = dataUrl;
+      link.download = `${state.status === "ready" ? state.board.title : "Board"} — ${date}.png`;
+      link.click();
+      return dataUrl;
+    },
+    [state],
+  );
+
+  // Export has to work for a viewer too, so this isn't gated on role.
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (isEditableFocused()) return;
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "e") {
+        e.preventDefault();
+        handleExportPng({ scope: "board", scale: 2, background: "white" });
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleExportPng]);
 
   function handleBack() {
     if (state.status === "ready" && state.board.role !== "viewer") {
@@ -71,6 +102,8 @@ export default function BoardRoute({ me }: { me: Me }) {
         onDeleted={() => navigate("/")}
         onDuplicated={(newBoard) => navigate(`/b/${newBoard.id}`)}
         onTagged={(tagId) => setState((s) => (s.status === "ready" ? { status: "ready", board: { ...s.board, tagId } } : s))}
+        onExportPng={handleExportPng}
+        selectionCount={selectionCount}
       />
       <div className="board-canvas-area">
         <Canvas
@@ -80,6 +113,7 @@ export default function BoardRoute({ me }: { me: Me }) {
           tool={tool}
           onToolUsed={() => setTool("select")}
           onHistoryChange={setHistory}
+          onSelectionChange={setSelectionCount}
           me={me}
           stickyColor={stickyColor}
         />
@@ -93,6 +127,7 @@ export default function BoardRoute({ me }: { me: Me }) {
             onRedo={() => canvasRef.current?.redo()}
             stickyColor={stickyColor}
             onStickyColorChange={setStickyColor}
+            onPickImages={(files) => canvasRef.current?.insertImageFiles(files)}
           />
         )}
       </div>

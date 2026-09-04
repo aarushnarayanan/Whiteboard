@@ -1,10 +1,11 @@
-import { Router } from "express";
+import express, { Router } from "express";
 import { and, eq, isNotNull, isNull, lt } from "drizzle-orm";
 import { asyncHandler } from "../asyncHandler.js";
 import { db } from "../db/index.js";
 import { boardMembers, boards, boardSnapshots, tags, users } from "../db/schema.js";
 import { requireAuth } from "../auth/middleware.js";
 import { loadMergedSnapshot } from "../ws/docStore.js";
+import { copyBoardImages, deleteBoardImages, getImage, putImage } from "../r2.js";
 
 export const boardsRouter = Router();
 
@@ -63,6 +64,16 @@ boardsRouter.post(
       }
       return duplicate;
     });
+
+    // Image keys are derived from (boardId, shapeId), so the copied snapshot's
+    // image shapes now point at the new board's prefix — which is empty until
+    // this runs. Logged and swallowed: a duplicate missing its images is a far
+    // better outcome than a duplicate that didn't happen.
+    try {
+      await copyBoardImages(boardId, duplicate.id);
+    } catch (err) {
+      console.error("failed to copy board images on duplicate", err);
+    }
 
     res.status(201).json({
       id: duplicate.id,
@@ -199,6 +210,99 @@ boardsRouter.post(
   }),
 );
 
+// Exactly the formats B6 calls for. Doubles as express.raw's `type` filter, so
+// anything else never gets parsed into a Buffer at all (see the isBuffer check).
+const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/svg+xml", "image/webp"];
+const MAX_IMAGE_BYTES = "10mb";
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+boardsRouter.post(
+  "/:id/images/:shapeId",
+  // Raw bytes, not JSON — deliberately bypassing the global
+  // express.json({ limit: "2mb" }) in app.ts rather than raising it, so
+  // thumbnails keep their small ceiling and image uploads get their own.
+  express.raw({ type: ALLOWED_IMAGE_TYPES, limit: MAX_IMAGE_BYTES }),
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+    const shapeId = req.params.shapeId;
+
+    // This ends up inside the object key, so it's a trust boundary: validating
+    // it here is what guarantees the key can never be attacker-shaped.
+    if (!UUID_RE.test(shapeId)) {
+      res.status(400).json({ error: "invalid image id" });
+      return;
+    }
+    // express.raw leaves req.body as {} when the content type isn't in the
+    // allowlist above, so this is also the content-type rejection.
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+      res.status(400).json({ error: `image must be one of: ${ALLOWED_IMAGE_TYPES.join(", ")}` });
+      return;
+    }
+
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership) {
+      res.status(404).json({ error: "board not found" });
+      return;
+    }
+    if (membership.role === "viewer") {
+      res.status(403).json({ error: "you don't have permission to add images to this board" });
+      return;
+    }
+
+    await putImage(membership.boardId, shapeId, req.body, req.get("content-type")!.split(";")[0]);
+    res.status(201).json({ ok: true });
+  }),
+);
+
+boardsRouter.get(
+  "/:id/images/:shapeId",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+    const shapeId = req.params.shapeId;
+
+    if (!UUID_RE.test(shapeId)) {
+      res.status(400).json({ error: "invalid image id" });
+      return;
+    }
+
+    // Every role can read — a viewer sees the board, so a viewer sees its
+    // images. Re-checked on every single request, which is the whole reason
+    // images proxy through here instead of being handed out as signed URLs.
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership) {
+      res.status(404).json({ error: "board not found" });
+      return;
+    }
+
+    const image = await getImage(membership.boardId, shapeId);
+    if (!image) {
+      res.status(404).json({ error: "image not found" });
+      return;
+    }
+
+    // An uploaded SVG is served from our own origin, so a direct navigation to
+    // this URL would render it as a document and run any script inside it —
+    // stored XSS against the session cookie. `sandbox` (without allow-scripts)
+    // stops that; <img> rendering is unaffected by either header.
+    res.set("Content-Security-Policy", "default-src 'none'; sandbox");
+    res.set("X-Content-Type-Options", "nosniff");
+    res.set("Content-Type", image.contentType);
+    // Overrides the blanket `no-store` app.ts puts on every /boards response,
+    // which would otherwise re-fetch every image on every render. The content
+    // at a key never changes, so this window only bounds how long a
+    // just-removed member's own browser can still show a cached copy.
+    // ponytail: 5 minutes of staleness; ETag revalidation if that's ever too long.
+    res.set("Cache-Control", "private, max-age=300");
+    image.body.pipe(res);
+  }),
+);
+
 boardsRouter.patch(
   "/:id",
   asyncHandler(async (req, res) => {
@@ -288,8 +392,14 @@ boardsRouter.delete(
     }
 
     // board_members, board_updates, and board_snapshots all cascade-delete
-    // from this via their foreign keys (migration 0003) — nothing else to clean up.
+    // from this via their foreign keys (migration 0003). Images don't — they
+    // live in R2, which no foreign key reaches, so the prefix is cleared here.
     await db.delete(boards).where(eq(boards.id, boardId));
+    try {
+      await deleteBoardImages(boardId);
+    } catch (err) {
+      console.error("failed to delete board images on permanent delete", err);
+    }
     res.status(200).json({ ok: true });
   }),
 );

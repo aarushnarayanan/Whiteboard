@@ -1,4 +1,13 @@
-import { Fragment, forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import {
+  Fragment,
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+} from "react";
 import {
   Stage,
   Layer,
@@ -13,11 +22,13 @@ import {
   Star,
   RegularPolygon,
   Circle,
+  Image as KonvaImage,
 } from "react-konva";
 import Konva from "konva";
 import type { KonvaEventObject } from "konva/lib/Node";
 import type { Tool, ShapeObj, ConnectorAnchor, ConnectorBinding } from "./types";
 import { useBoardDoc } from "../board/useBoardDoc";
+import { boardImageUrl, uploadBoardImage } from "../api/boards";
 import type { Me } from "../api/auth";
 
 const MIN_SCALE = 0.1;
@@ -47,6 +58,9 @@ const ALL_ANCHORS = [
 ];
 const STICKY_BAND_RATIO = 0.2;
 const NON_RESIZABLE_TYPES = new Set(["line", "arrow", "pen"]);
+// Corner handles only, ratio preserved — a stretched photo reads as a bug, and
+// a sticky note is square by design.
+const ASPECT_LOCKED_TYPES = new Set(["sticky", "image"]);
 // Shapes whose label never auto-deletes on empty or auto-resizes from text
 // content — a blank shape is still a meaningful object, same reasoning as
 // the sticky/frame branches in commitTextEdit this set was extended from.
@@ -60,6 +74,13 @@ const SHAPE_TEXT_PADDING = 8;
 // different exact number; any long label shrinks further via
 // fitShapeFontSize regardless of which).
 const SHAPE_TEXT_INSET = 0.7;
+const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+const IMAGE_MAX_EDGE = 600;
+// An SVG with no intrinsic size reports 0×0; fall back to something placeable
+// rather than an invisible zero-area shape.
+const IMAGE_FALLBACK_SIZE = { width: 400, height: 300 };
+const EXPORT_PADDING = 40;
+const THUMB_TARGET_WIDTH = 400;
 
 function emptyTableCells(): string[][] {
   return Array.from({ length: TABLE_ROWS }, () => Array.from({ length: TABLE_COLS }, () => ""));
@@ -103,7 +124,7 @@ function cursorColor(id: string): string {
   return CURSOR_COLORS[h % CURSOR_COLORS.length];
 }
 
-function isEditableFocused(): boolean {
+export function isEditableFocused(): boolean {
   const active = document.activeElement;
   return (
     active instanceof HTMLElement &&
@@ -295,6 +316,165 @@ function shapesIntersectingRect(
     .map((s) => s.id);
 }
 
+// The world-space box enclosing every given shape, padded. Uses
+// getShapeBounds (not raw x/width) so a board containing connectors or pen
+// strokes isn't cropped through them — both export and the board thumbnail
+// go through here.
+function contentBounds(
+  list: ShapeObj[],
+  padding: number,
+): { x: number; y: number; width: number; height: number } | null {
+  if (list.length === 0) return null;
+  const boxes = list.map(getShapeBounds);
+  const x0 = Math.min(...boxes.map((b) => b.x)) - padding;
+  const y0 = Math.min(...boxes.map((b) => b.y)) - padding;
+  const x1 = Math.max(...boxes.map((b) => b.x + b.width)) + padding;
+  const y1 = Math.max(...boxes.map((b) => b.y + b.height)) + padding;
+  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+}
+
+/** Natural pixel size of a file, read locally before it's uploaded — what the
+ *  placed shape's aspect ratio comes from. */
+function readImageSize(file: File): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const probe = new window.Image();
+    probe.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(
+        probe.naturalWidth > 0 && probe.naturalHeight > 0
+          ? { width: probe.naturalWidth, height: probe.naturalHeight }
+          : IMAGE_FALLBACK_SIZE,
+      );
+    };
+    probe.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("that file isn't a readable image"));
+    };
+    probe.src = objectUrl;
+  });
+}
+
+// Screenshots are routinely 3000px wide; placing one at native size drops a
+// wall on the board. Only ever shrinks — a small image keeps its own size.
+function fitWithinMaxEdge(size: { width: number; height: number }): { width: number; height: number } {
+  const scale = Math.min(1, IMAGE_MAX_EDGE / Math.max(size.width, size.height));
+  return { width: Math.round(size.width * scale), height: Math.round(size.height * scale) };
+}
+
+// Same-origin, so no crossOrigin and no signed-URL refresh — the whole reason
+// image reads proxy through our own server.
+function useImageElement(url: string): { image?: HTMLImageElement; failed: boolean } {
+  const [state, setState] = useState<{ image?: HTMLImageElement; failed: boolean }>({ failed: false });
+  useEffect(() => {
+    let cancelled = false;
+    const element = new window.Image();
+    element.onload = () => {
+      if (!cancelled) setState({ image: element, failed: false });
+    };
+    element.onerror = () => {
+      if (!cancelled) setState({ failed: true });
+    };
+    element.src = url;
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+  return state;
+}
+
+// A placeholder box — the one visual shared by "loading", "uploading" and
+// "that upload failed", so an image shape is never simply invisible.
+function ImagePlaceholder({
+  id,
+  width,
+  height,
+  label,
+  tone = "neutral",
+}: {
+  id?: string;
+  width: number;
+  height: number;
+  label: string;
+  tone?: "neutral" | "error";
+}) {
+  const stroke = tone === "error" ? "oklch(58% 0.19 25)" : SHAPE_STROKE;
+  return (
+    <>
+      <Rect
+        id={id}
+        width={width}
+        height={height}
+        fill="oklch(97% 0.004 250)"
+        stroke={stroke}
+        strokeWidth={1.5}
+        dash={[6, 4]}
+        cornerRadius={4}
+      />
+      <Text
+        width={width}
+        height={height}
+        text={label}
+        fontSize={13}
+        fontFamily={TEXT_FONT_FAMILY}
+        align="center"
+        verticalAlign="middle"
+        fill={stroke}
+        listening={false}
+      />
+    </>
+  );
+}
+
+// The position/selection/drag props every shape branch in the component below
+// hands to its Konva node. Pulled out as a type only because the image branch
+// lives in its own component (it needs a hook, which can't run inside a .map).
+interface ShapeNodeProps {
+  x: number;
+  y: number;
+  draggable: boolean;
+  onClick: (e: KonvaEventObject<MouseEvent>) => void;
+  onTap: () => void;
+  onDragStart: (e: KonvaEventObject<DragEvent>) => void;
+  onDragMove: (e: KonvaEventObject<DragEvent>) => void;
+  onDragEnd: (e: KonvaEventObject<DragEvent>) => void;
+  onTransformEnd: (e: KonvaEventObject<Event>) => void;
+}
+
+function ImageShape({
+  shape,
+  boardId,
+  nodeRef,
+  nodeProps,
+}: {
+  shape: ShapeObj;
+  boardId: string;
+  nodeRef: (node: Konva.Node | null) => void;
+  nodeProps: ShapeNodeProps;
+}) {
+  const { image, failed } = useImageElement(boardImageUrl(boardId, shape.id));
+
+  if (image) {
+    return (
+      <KonvaImage id={shape.id} ref={nodeRef} image={image} width={shape.width} height={shape.height} {...nodeProps} />
+    );
+  }
+  // Stays selectable and draggable while loading or if it can't be fetched, so
+  // a broken image is still something you can move or delete rather than an
+  // invisible hole on the board.
+  return (
+    <Group ref={nodeRef} {...nodeProps}>
+      <ImagePlaceholder
+        id={shape.id}
+        width={shape.width}
+        height={shape.height}
+        label={failed ? "Image unavailable" : "Loading…"}
+        tone={failed ? "error" : "neutral"}
+      />
+    </Group>
+  );
+}
+
 interface RemoteCursor {
   name: string;
   color: string;
@@ -304,9 +484,19 @@ interface RemoteCursor {
 
 export type BoardRole = "owner" | "editor" | "viewer";
 
+export interface ExportPngOptions {
+  scope: "board" | "selection";
+  /** Pixel ratio: 1x or 2x. */
+  scale: number;
+  background: "white" | "transparent";
+}
+
 export interface CanvasHandle {
   /** A small snapshot of the current canvas, or null if the stage isn't mounted. */
   captureThumbnail: () => string | null;
+  /** A PNG data URL, or null if there's nothing in the requested scope. */
+  exportPNG: (options: ExportPngOptions) => string | null;
+  insertImageFiles: (files: File[]) => void;
   undo: () => void;
   redo: () => void;
 }
@@ -317,12 +507,27 @@ interface CanvasProps {
   tool: Tool;
   onToolUsed: () => void;
   onHistoryChange: (state: { canUndo: boolean; canRedo: boolean }) => void;
+  onSelectionChange: (count: number) => void;
   me: Me;
   stickyColor: string;
 }
 
+/** An image being uploaded. Deliberately local state, never in the Yjs doc:
+ *  nothing enters the shared document until its bytes are actually in R2, so
+ *  a collaborator can never receive a shape whose image 404s. */
+interface PendingUpload {
+  id: string;
+  file: File;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  error?: string;
+  retryable: boolean;
+}
+
 const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
-  { boardId, role, tool, onToolUsed, onHistoryChange, me, stickyColor },
+  { boardId, role, tool, onToolUsed, onHistoryChange, onSelectionChange, me, stickyColor },
   ref
 ) {
   const canEdit = role !== "viewer";
@@ -330,6 +535,15 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const stageRef = useRef<Konva.Stage>(null);
   const transformerRef = useRef<Konva.Transformer>(null);
   const shapeRefs = useRef(new Map<string, Konva.Node>());
+  // The two draggable endpoint handles a selected connector shows, keyed
+  // `${connectorId}:start`/`:end` — updated imperatively by rerouteConnectors,
+  // same as the connector's own line, so they don't rely on an incidental
+  // React re-render (e.g. the throttled cursor-broadcast one) to catch up
+  // mid-drag. See the comment on rerouteConnectors for why that mattered.
+  const connectorHandleRefs = useRef(new Map<string, Konva.Circle>());
+  // Wrapped in one group purely so an export can hide every remote cursor at
+  // once — B8 forbids baking presence chrome into the output.
+  const cursorsGroupRef = useRef<Konva.Group>(null);
 
   const [size, setSize] = useState({ width: 0, height: 0 });
   const { shapes, upsertShape, upsertShapes, removeShape, removeShapes, getShape, undo, redo, canUndo, canRedo, providerRef } =
@@ -362,40 +576,70 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   // typed character lands in the overlay instead of being lost to the
   // keystroke that arrived before the overlay existed.
   const pendingSeedRef = useRef<string | null>(null);
+  const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
+  // Where a pasted image lands. Paste carries no coordinates of its own, so
+  // the last place the pointer was over the canvas is the best guess at
+  // "here"; falls back to the middle of the viewport.
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
+
+  // The one place the stage gets rasterized — thumbnails and PNG export both
+  // come through here, so the two things that must never end up in an image
+  // (selection handles, other people's cursors) are excluded once rather than
+  // per caller.
+  function renderStageToDataURL(
+    bounds: { x: number; y: number; width: number; height: number },
+    pixelRatio: number,
+    background?: string,
+  ): string | null {
+    const stage = stageRef.current;
+    if (!stage) return null;
+
+    // Rasterize the world-space box, not whatever happens to be panned/zoomed
+    // into view.
+    const oldScale = stage.scale();
+    const oldPos = stage.position();
+    stage.scale({ x: 1, y: 1 });
+    stage.position({ x: 0, y: 0 });
+
+    const transformer = transformerRef.current;
+    const transformerWasVisible = transformer?.isVisible() ?? false;
+    transformer?.visible(false);
+    const cursors = cursorsGroupRef.current;
+    const cursorsWereVisible = cursors?.isVisible() ?? false;
+    cursors?.visible(false);
+
+    let backdrop: Konva.Rect | undefined;
+    if (background) {
+      backdrop = new Konva.Rect({ ...bounds, fill: background, listening: false });
+      stage.getLayers()[0]?.add(backdrop);
+      backdrop.moveToBottom();
+    }
+
+    const dataUrl = stage.toDataURL({ ...bounds, pixelRatio });
+
+    backdrop?.destroy();
+    if (transformerWasVisible) transformer?.visible(true);
+    if (cursorsWereVisible) cursors?.visible(true);
+    stage.scale(oldScale);
+    stage.position(oldPos);
+
+    return dataUrl;
+  }
 
   useImperativeHandle(ref, () => ({
     captureThumbnail: () => {
-      const stage = stageRef.current;
-      if (!stage || shapes.length === 0) return null;
-
-      const PADDING = 40;
-      const THUMB_TARGET_WIDTH = 400;
-      const minX = Math.min(...shapes.map((s) => s.x)) - PADDING;
-      const minY = Math.min(...shapes.map((s) => s.y)) - PADDING;
-      const boxWidth = Math.max(...shapes.map((s) => s.x + s.width)) - minX + PADDING;
-      const boxHeight = Math.max(...shapes.map((s) => s.y + s.height)) - minY + PADDING;
-
-      // Snapshot the shapes' own bounding box in world space, not whatever's
-      // currently panned/zoomed into view — so the thumbnail scales to fit
-      // all content instead of cropping whatever the last viewport happened
-      // to be centered on.
-      const oldScale = stage.scale();
-      const oldPos = stage.position();
-      stage.scale({ x: 1, y: 1 });
-      stage.position({ x: 0, y: 0 });
-
-      const dataUrl = stage.toDataURL({
-        x: minX,
-        y: minY,
-        width: boxWidth,
-        height: boxHeight,
-        pixelRatio: Math.min(1, THUMB_TARGET_WIDTH / boxWidth),
-      });
-
-      stage.scale(oldScale);
-      stage.position(oldPos);
-
-      return dataUrl;
+      const bounds = contentBounds(shapes, EXPORT_PADDING);
+      if (!bounds) return null;
+      return renderStageToDataURL(bounds, Math.min(1, THUMB_TARGET_WIDTH / bounds.width));
+    },
+    exportPNG: ({ scope, scale: pixelRatio, background }: ExportPngOptions) => {
+      const subject = scope === "selection" ? shapes.filter((s) => selectedIds.has(s.id)) : shapes;
+      const bounds = contentBounds(subject, scope === "selection" ? EXPORT_PADDING / 2 : EXPORT_PADDING);
+      if (!bounds) return null;
+      return renderStageToDataURL(bounds, pixelRatio, background === "white" ? "#ffffff" : undefined);
+    },
+    insertImageFiles: (files: File[]) => {
+      void insertImageFiles(files);
     },
     undo,
     redo,
@@ -415,6 +659,29 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   useEffect(() => {
     onHistoryChange({ canUndo, canRedo });
   }, [canUndo, canRedo, onHistoryChange]);
+
+  useEffect(() => {
+    onSelectionChange(selectedIds.size);
+  }, [selectedIds, onSelectionChange]);
+
+  // Screenshot-paste is the most common way an image reaches a whiteboard, so
+  // it's the path that gets a document-level listener. Bails out while a
+  // sticky/shape label is being edited so pasting text into one is untouched.
+  useEffect(() => {
+    if (!canEdit) return;
+    function handlePaste(e: ClipboardEvent) {
+      if (isEditableFocused()) return;
+      const files = Array.from(e.clipboardData?.items ?? [])
+        .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => file !== null);
+      if (files.length === 0) return;
+      e.preventDefault();
+      void insertImageFilesRef.current(files);
+    }
+    document.addEventListener("paste", handlePaste);
+    return () => document.removeEventListener("paste", handlePaste);
+  }, [canEdit]);
 
   useEffect(() => {
     const awareness = providerRef.current?.awareness;
@@ -617,6 +884,126 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     return stage.getAbsoluteTransform().point(point);
   }
 
+  function viewportCenter(): { x: number; y: number } {
+    const stage = stageRef.current;
+    if (!stage) return { x: 0, y: 0 };
+    return stage
+      .getAbsoluteTransform()
+      .copy()
+      .invert()
+      .point({ x: size.width / 2, y: size.height / 2 });
+  }
+
+  async function startUpload(pending: PendingUpload) {
+    try {
+      await uploadBoardImage(boardId, pending.id, pending.file);
+      // Only once the bytes are in R2 does this become a shape anyone else
+      // can see — see PendingUpload.
+      upsertShape({
+        id: pending.id,
+        type: "image",
+        x: pending.x,
+        y: pending.y,
+        width: pending.width,
+        height: pending.height,
+      });
+      setPendingUploads((list) => list.filter((u) => u.id !== pending.id));
+    } catch (err) {
+      setPendingUploads((list) =>
+        list.map((u) => (u.id === pending.id ? { ...u, error: err instanceof Error ? err.message : "Upload failed" } : u)),
+      );
+    }
+  }
+
+  /** The single entry point behind paste, drag-and-drop and the toolbar
+   *  button. `point` is where the image should be CENTERED in world space;
+   *  without one it falls back to the last pointer position, then viewport
+   *  center. Centering (rather than placing the top-left corner there) is
+   *  what keeps a large screenshot from landing mostly off-screen when
+   *  dropped near a viewport edge. */
+  async function insertImageFiles(files: File[], point?: { x: number; y: number }) {
+    if (!canEdit) return;
+    const origin = point ?? lastPointerRef.current ?? viewportCenter();
+
+    // Top-left for a box of `size` centered on `center`, staggered by `offset`
+    // so a multi-file drop doesn't stack every image into one pile.
+    function centeredTopLeft(center: { x: number; y: number }, size: { width: number; height: number }, offset: number) {
+      return { x: center.x + offset - size.width / 2, y: center.y + offset - size.height / 2 };
+    }
+
+    let offset = 0;
+    for (const file of files) {
+      if (!file.type.startsWith("image/")) continue;
+      const thisOffset = offset;
+      offset += 24;
+
+      const failed = (error: string): PendingUpload => ({
+        id: crypto.randomUUID(),
+        file,
+        ...centeredTopLeft(origin, IMAGE_FALLBACK_SIZE, thisOffset),
+        ...IMAGE_FALLBACK_SIZE,
+        error,
+        retryable: false,
+      });
+
+      if (file.size > IMAGE_MAX_BYTES) {
+        setPendingUploads((list) => [...list, failed("Images must be under 10 MB")]);
+        continue;
+      }
+
+      let fitted;
+      try {
+        fitted = fitWithinMaxEdge(await readImageSize(file));
+      } catch {
+        setPendingUploads((list) => [...list, failed("Couldn't read that image")]);
+        continue;
+      }
+
+      const pending: PendingUpload = {
+        id: crypto.randomUUID(),
+        file,
+        ...centeredTopLeft(origin, fitted, thisOffset),
+        ...fitted,
+        retryable: true,
+      };
+      setPendingUploads((list) => [...list, pending]);
+      void startUpload(pending);
+    }
+  }
+
+  // Read by the paste listener, which subscribes once rather than re-binding
+  // on every render just to see a fresh closure.
+  const insertImageFilesRef = useRef(insertImageFiles);
+  insertImageFilesRef.current = insertImageFiles;
+
+  /** Clicking a failed placeholder: retry if retrying could work, otherwise
+   *  just clear it away. Nothing failed ever reached the shared document. */
+  function resolveFailedUpload(pending: PendingUpload) {
+    if (!pending.retryable) {
+      setPendingUploads((list) => list.filter((u) => u.id !== pending.id));
+      return;
+    }
+    setPendingUploads((list) => list.map((u) => (u.id === pending.id ? { ...u, error: undefined } : u)));
+    void startUpload(pending);
+  }
+
+  function handleFileDrop(e: ReactDragEvent<HTMLDivElement>) {
+    if (!canEdit) return;
+    const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith("image/"));
+    if (files.length === 0) return;
+    e.preventDefault();
+
+    const stage = stageRef.current;
+    let point: { x: number; y: number } | undefined;
+    if (stage) {
+      // Konva's own helper for exactly this: a drop event carries no stage
+      // coordinates until the stage is told where the pointer was.
+      stage.setPointersPositions(e.nativeEvent);
+      point = toStagePoint(stage);
+    }
+    void insertImageFiles(files, point);
+  }
+
   function selectShape(id: string, additive: boolean) {
     setSelectedIds((prev) => {
       if (!additive) return new Set([id]);
@@ -669,7 +1056,14 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   // Any connector bound to `shapeId` gets its rendered points recomputed
   // from the shape's current (live, mid-drag included) position — called
   // from every place a shape's node can move, so a bound arrow tracks its
-  // target live instead of only snapping into place on commit.
+  // target live instead of only snapping into place on commit. Also moves
+  // that connector's own endpoint handles (visible only while it's the sole
+  // selection) the same way — their x/y are otherwise plain React props,
+  // recomputed only on a real re-render, which doesn't happen on its own
+  // during a drag (Konva mutates node positions directly, bypassing React
+  // state) — without this they'd sit frozen at the pre-drag position and
+  // only snap to the right spot once the drag commits and something else
+  // happens to force a re-render.
   function rerouteConnectors(shapeId: string) {
     let changed = false;
     for (const s of shapes) {
@@ -679,6 +1073,8 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       if (!node) continue;
       const { x1, y1, x2, y2 } = resolveConnectorEndpoints(s, shapes, shapeRefs.current);
       node.points([x1, y1, x2, y2]);
+      connectorHandleRefs.current.get(`${s.id}:start`)?.position({ x: x1, y: y1 });
+      connectorHandleRefs.current.get(`${s.id}:end`)?.position({ x: x2, y: y2 });
       changed = true;
     }
     if (changed) stageRef.current?.batchDraw();
@@ -1070,6 +1466,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     const stage = stageRef.current;
     if (!stage) return;
     const point = toStagePoint(stage);
+    lastPointerRef.current = point;
 
     const now = Date.now();
     if (now - lastCursorSent.current > CURSOR_THROTTLE_MS) {
@@ -1245,7 +1642,17 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   const selectionBounds = selectionUnionBounds(selectedIds, shapes);
 
   return (
-    <div ref={containerRef} className="canvas-container" onMouseLeave={handleStageMouseLeave}>
+    <div
+      ref={containerRef}
+      className="canvas-container"
+      onMouseLeave={handleStageMouseLeave}
+      // Without preventDefault here the browser navigates away to the dropped
+      // file instead of ever firing onDrop.
+      onDragOver={(e) => {
+        if (canEdit) e.preventDefault();
+      }}
+      onDrop={handleFileDrop}
+    >
       <Stage
         ref={stageRef}
         width={size.width}
@@ -1297,6 +1704,43 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
               />
             ))}
           {shapes.map((shape) => {
+            if (shape.type === "image") {
+              return (
+                <ImageShape
+                  key={shape.id}
+                  shape={shape}
+                  boardId={boardId}
+                  nodeRef={(node: Konva.Node | null) => {
+                    if (node) shapeRefs.current.set(shape.id, node);
+                    else shapeRefs.current.delete(shape.id);
+                  }}
+                  nodeProps={{
+                    x: shape.x,
+                    y: shape.y,
+                    draggable: canEdit && tool === "select",
+                    onClick: (e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey),
+                    onTap: () => selectShape(shape.id, false),
+                    onDragStart: (e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target),
+                    onDragMove: (e: KonvaEventObject<DragEvent>) => handleGroupDragMove(e, shape.id),
+                    onDragEnd: (e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target),
+                    onTransformEnd: (e: KonvaEventObject<Event>) => {
+                      const node = e.target;
+                      const scaleX = node.scaleX();
+                      const scaleY = node.scaleY();
+                      node.scaleX(1);
+                      node.scaleY(1);
+                      upsertShape({
+                        ...shape,
+                        x: node.x(),
+                        y: node.y(),
+                        width: Math.max(8, shape.width * scaleX),
+                        height: Math.max(8, shape.height * scaleY),
+                      });
+                    },
+                  }}
+                />
+              );
+            }
             if (shape.type === "rect" || shape.type === "ellipse" || shape.type === "star" || shape.type === "hexagon") {
               const labelBox = shapeLabelBox(shape);
               const shapeFillProps = { id: shape.id, fill: SHAPE_FILL, stroke: SHAPE_STROKE, strokeWidth: 2 };
@@ -1463,6 +1907,10 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   {canEdit && tool === "select" && singleSelectedId === shape.id && (
                     <>
                       <Circle
+                        ref={(node: Konva.Circle | null) => {
+                          if (node) connectorHandleRefs.current.set(`${shape.id}:start`, node);
+                          else connectorHandleRefs.current.delete(`${shape.id}:start`);
+                        }}
                         x={x1}
                         y={y1}
                         radius={6}
@@ -1474,6 +1922,10 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                         onDragEnd={(e: KonvaEventObject<DragEvent>) => handleConnectorHandleDragEnd(shape, "start", e)}
                       />
                       <Circle
+                        ref={(node: Konva.Circle | null) => {
+                          if (node) connectorHandleRefs.current.set(`${shape.id}:end`, node);
+                          else connectorHandleRefs.current.delete(`${shape.id}:end`);
+                        }}
                         x={x2}
                         y={y2}
                         radius={6}
@@ -1851,6 +2303,32 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
               />
             );
           })}
+          {/* Local-only: an upload in flight or one that failed. Never in the
+              shared doc, so no collaborator ever sees a broken object. */}
+          {pendingUploads.map((pending) => (
+            <Group
+              key={pending.id}
+              x={pending.x}
+              y={pending.y}
+              onClick={() => {
+                if (pending.error) resolveFailedUpload(pending);
+              }}
+              onTap={() => {
+                if (pending.error) resolveFailedUpload(pending);
+              }}
+            >
+              <ImagePlaceholder
+                width={pending.width}
+                height={pending.height}
+                tone={pending.error ? "error" : "neutral"}
+                label={
+                  pending.error
+                    ? `${pending.error}\n${pending.retryable ? "Click to retry" : "Click to dismiss"}`
+                    : "Uploading…"
+                }
+              />
+            </Group>
+          ))}
           {marquee && (
             <Rect
               x={Math.min(marquee.x0, marquee.x1)}
@@ -1888,11 +2366,12 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             <Transformer
               ref={transformerRef}
               rotateEnabled={false}
-              keepRatio={selectedShape?.type === "sticky"}
-              enabledAnchors={selectedShape?.type === "sticky" ? CORNER_ANCHORS : ALL_ANCHORS}
+              keepRatio={ASPECT_LOCKED_TYPES.has(selectedShape?.type ?? "")}
+              enabledAnchors={ASPECT_LOCKED_TYPES.has(selectedShape?.type ?? "") ? CORNER_ANCHORS : ALL_ANCHORS}
             />
           )}
 
+          <Group ref={cursorsGroupRef} listening={false}>
           {Array.from(remoteCursors.entries()).map(([clientId, cursor]) => (
             <Group key={clientId} x={cursor.x} y={cursor.y} scaleX={1 / scale} scaleY={1 / scale} listening={false}>
               <Path
@@ -1912,6 +2391,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
               />
             </Group>
           ))}
+          </Group>
         </Layer>
       </Stage>
 

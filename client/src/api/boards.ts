@@ -57,6 +57,23 @@ export async function uploadThumbnail(boardId: string, dataUrl: string): Promise
   });
 }
 
+/** The URL an image shape renders from. Same-origin on purpose: the server
+ *  re-checks board membership on every fetch, and the canvas never gets
+ *  tainted, so PNG export keeps working with images on the board. */
+export function boardImageUrl(boardId: string, shapeId: string): string {
+  return `/boards/${boardId}/images/${shapeId}`;
+}
+
+export async function uploadBoardImage(boardId: string, shapeId: string, file: File): Promise<void> {
+  const res = await fetch(boardImageUrl(boardId, shapeId), {
+    method: "POST",
+    headers: { "content-type": file.type },
+    credentials: "include",
+    body: file,
+  });
+  await parseJsonOrThrow(res);
+}
+
 export async function renameBoard(boardId: string, title: string): Promise<void> {
   const res = await fetch(`/boards/${boardId}`, {
     method: "PATCH",

@@ -11,6 +11,7 @@ import {
   type BoardSummary,
 } from "../api/boards";
 import { createTag, listTags, type Tag } from "../api/tags";
+import type { ExportPngOptions } from "./Canvas";
 
 interface BoardHeaderProps {
   board: BoardSummary;
@@ -19,6 +20,9 @@ interface BoardHeaderProps {
   onDeleted: () => void;
   onDuplicated: (board: BoardSummary) => void;
   onTagged: (tagId: string | null) => void;
+  /** Returns null when there was nothing to export. */
+  onExportPng: (options: ExportPngOptions) => string | null;
+  selectionCount: number;
 }
 
 function BackIcon() {
@@ -82,7 +86,16 @@ function KebabIcon() {
   );
 }
 
-export default function BoardHeader({ board, onBack, onRenamed, onDeleted, onDuplicated, onTagged }: BoardHeaderProps) {
+export default function BoardHeader({
+  board,
+  onBack,
+  onRenamed,
+  onDeleted,
+  onDuplicated,
+  onTagged,
+  onExportPng,
+  selectionCount,
+}: BoardHeaderProps) {
   const isOwner = board.role === "owner";
 
   const [titleMenuOpen, setTitleMenuOpen] = useState(false);
@@ -99,6 +112,12 @@ export default function BoardHeader({ board, onBack, onRenamed, onDeleted, onDup
   const [shareStatus, setShareStatus] = useState<string | null>(null);
   const [members, setMembers] = useState<BoardMember[] | null>(null);
   const [membersError, setMembersError] = useState<string | null>(null);
+
+  const [exporting, setExporting] = useState(false);
+  const [exportScope, setExportScope] = useState<ExportPngOptions["scope"]>("board");
+  const [exportScale, setExportScale] = useState(2);
+  const [exportBackground, setExportBackground] = useState<ExportPngOptions["background"]>("white");
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const [tagging, setTagging] = useState(false);
   const [tags, setTags] = useState<Tag[]>([]);
@@ -202,6 +221,15 @@ export default function BoardHeader({ board, onBack, onRenamed, onDeleted, onDup
     }
   }
 
+  function handleExport() {
+    setExportError(null);
+    if (onExportPng({ scope: exportScope, scale: exportScale, background: exportBackground })) {
+      setExporting(false);
+      return;
+    }
+    setExportError(exportScope === "selection" ? "Nothing selected to export" : "This board is empty");
+  }
+
   async function handleDuplicate() {
     setTitleMenuOpen(false);
     setHeaderMenuOpen(false);
@@ -284,11 +312,78 @@ export default function BoardHeader({ board, onBack, onRenamed, onDeleted, onDup
                 {currentTag ? `Tag: ${currentTag.name}` : "Tag board"}
               </button>
               <div className="board-header-menu-divider" />
-              <button type="button" disabled title="Not built yet">
+              <button
+                type="button"
+                onClick={() => {
+                  setTitleMenuOpen(false);
+                  setExportError(null);
+                  if (selectionCount === 0) setExportScope("board");
+                  setExporting(true);
+                }}
+              >
                 Export as PNG
               </button>
               <button type="button" disabled title="Not built yet">
                 Export as PDF
+              </button>
+            </div>
+          </>
+        )}
+
+        {exporting && (
+          <>
+            <div className="board-header-menu-backdrop" onClick={() => setExporting(false)} />
+            <div className="board-header-tag-popover">
+              <span className="board-header-tag-popover-label">Export as PNG</span>
+              {exportError && <span className="board-header-share-status">{exportError}</span>}
+
+              <div className="board-header-export-row">
+                <button
+                  type="button"
+                  className={`board-header-export-option ${exportScope === "board" ? "board-header-export-option-active" : ""}`}
+                  onClick={() => setExportScope("board")}
+                >
+                  Whole board
+                </button>
+                <button
+                  type="button"
+                  className={`board-header-export-option ${exportScope === "selection" ? "board-header-export-option-active" : ""}`}
+                  disabled={selectionCount === 0}
+                  title={selectionCount === 0 ? "Select something on the board first" : undefined}
+                  onClick={() => setExportScope("selection")}
+                >
+                  Selection{selectionCount > 0 ? ` (${selectionCount})` : ""}
+                </button>
+              </div>
+
+              <div className="board-header-export-row">
+                {[1, 2].map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`board-header-export-option ${exportScale === value ? "board-header-export-option-active" : ""}`}
+                    onClick={() => setExportScale(value)}
+                  >
+                    {value}x
+                  </button>
+                ))}
+              </div>
+
+              <div className="board-header-export-row">
+                {(["white", "transparent"] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`board-header-export-option ${exportBackground === value ? "board-header-export-option-active" : ""}`}
+                    onClick={() => setExportBackground(value)}
+                  >
+                    {value === "white" ? "White" : "Transparent"}
+                  </button>
+                ))}
+              </div>
+
+              <button type="button" className="board-header-export-submit" onClick={handleExport}>
+                Download PNG
               </button>
             </div>
           </>

@@ -45,6 +45,12 @@ export function createApp(): Express {
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     console.error("request error", err);
     if (res.headersSent) return;
+    // body-parser's own over-limit error, thrown before any handler runs — an
+    // oversized image upload has to read as "too big", not "internal error".
+    if (typeof err === "object" && err !== null && (err as { type?: string }).type === "entity.too.large") {
+      res.status(413).json({ error: "that file is too large" });
+      return;
+    }
     res.status(500).json({ error: "internal error" });
   });
 

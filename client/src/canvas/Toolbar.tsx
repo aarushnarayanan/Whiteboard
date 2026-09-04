@@ -1,4 +1,4 @@
-import { useState, type ReactElement } from "react";
+import { useRef, useState, type ReactElement } from "react";
 import type { Tool } from "./types";
 
 interface ToolbarProps {
@@ -10,6 +10,7 @@ interface ToolbarProps {
   onRedo: () => void;
   stickyColor: string;
   onStickyColorChange: (color: string) => void;
+  onPickImages: (files: File[]) => void;
 }
 
 function SelectIcon() {
@@ -205,9 +206,11 @@ export default function Toolbar({
   onRedo,
   stickyColor,
   onStickyColorChange,
+  onPickImages,
 }: ToolbarProps) {
   const [shapesOpen, setShapesOpen] = useState(false);
   const [stickyOpen, setStickyOpen] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const isShapeTool =
     tool === "rect" || tool === "ellipse" || tool === "line" || tool === "arrow" || tool === "star" || tool === "hexagon";
 
@@ -343,9 +346,28 @@ export default function Toolbar({
       >
         <FrameIcon />
       </button>
-      <button type="button" className="toolbar-button" disabled title="Not built yet">
+      {/* Opens the picker straight away rather than arming a tool — there's
+          nothing to place until a file has actually been chosen. */}
+      <button
+        type="button"
+        className="toolbar-button"
+        title="Insert image"
+        onClick={() => fileInputRef.current?.click()}
+      >
         <ImageIcon />
       </button>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/svg+xml,image/webp"
+        multiple
+        hidden
+        onChange={(e) => {
+          const files = Array.from(e.target.files ?? []);
+          if (files.length > 0) onPickImages(files);
+          e.target.value = ""; // so picking the same file twice still fires
+        }}
+      />
       <button type="button" className="toolbar-button" disabled title="Not built yet">
         <CommentIcon />
       </button>
