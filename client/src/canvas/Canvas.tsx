@@ -13,7 +13,7 @@ import {
   Star,
   RegularPolygon,
 } from "react-konva";
-import type Konva from "konva";
+import Konva from "konva";
 import type { KonvaEventObject } from "konva/lib/Node";
 import type { Tool, ShapeObj } from "./types";
 import { useBoardDoc } from "../board/useBoardDoc";
@@ -46,6 +46,19 @@ const ALL_ANCHORS = [
 ];
 const STICKY_BAND_RATIO = 0.2;
 const NON_RESIZABLE_TYPES = new Set(["line", "arrow", "pen"]);
+// Shapes whose label never auto-deletes on empty or auto-resizes from text
+// content — a blank shape is still a meaningful object, same reasoning as
+// the sticky/frame branches in commitTextEdit this set was extended from.
+const LABELABLE_SHAPE_TYPES = new Set(["rect", "ellipse", "star", "hexagon", "sticky", "frame"]);
+const SHAPE_TEXT_MIN_FONT = 8;
+const SHAPE_TEXT_MAX_FONT = 18;
+const SHAPE_TEXT_PADDING = 8;
+// How much of the bounding box ellipse/star/hexagon labels are inscribed
+// within — one shared, slightly-conservative value rather than a per-shape
+// figure (star's concave points vs. ellipse's curve would each want a
+// different exact number; any long label shrinks further via
+// fitShapeFontSize regardless of which).
+const SHAPE_TEXT_INSET = 0.7;
 
 function emptyTableCells(): string[][] {
   return Array.from({ length: TABLE_ROWS }, () => Array.from({ length: TABLE_COLS }, () => ""));
@@ -95,6 +108,37 @@ function isEditableFocused(): boolean {
     active instanceof HTMLElement &&
     (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable)
   );
+}
+
+// The local (group-relative) box a shape's label lays out and centers
+// within — the full box minus padding for `rect`, further inset for the
+// three round/pointed types so text doesn't run into their curved or
+// concave edges (see SHAPE_TEXT_INSET).
+function shapeLabelBox(shape: ShapeObj): { x: number; y: number; width: number; height: number } {
+  const inset = shape.type === "rect" ? 1 : SHAPE_TEXT_INSET;
+  const innerWidth = Math.max(0, shape.width * inset - SHAPE_TEXT_PADDING * 2);
+  const innerHeight = Math.max(0, shape.height * inset - SHAPE_TEXT_PADDING * 2);
+  return {
+    x: (shape.width - innerWidth) / 2,
+    y: (shape.height - innerHeight) / 2,
+    width: innerWidth,
+    height: innerHeight,
+  };
+}
+
+// Reuses Konva's own text-layout engine to find the largest font size that
+// keeps `text` wrapped within innerWidth/innerHeight, rather than
+// reimplementing word-wrap measurement by hand. The probe Text node is never
+// added to a Layer — it exists purely to ask Konva "how tall would this
+// render," using the exact engine that will actually draw it.
+function fitShapeFontSize(text: string, innerWidth: number, innerHeight: number): number {
+  if (!text || innerWidth <= 0 || innerHeight <= 0) return SHAPE_TEXT_MAX_FONT;
+  const probe = new Konva.Text({ text, width: innerWidth, fontFamily: TEXT_FONT_FAMILY, lineHeight: 1.2, wrap: "word" });
+  for (let size = SHAPE_TEXT_MAX_FONT; size > SHAPE_TEXT_MIN_FONT; size--) {
+    probe.fontSize(size);
+    if (probe.height() <= innerHeight) return size;
+  }
+  return SHAPE_TEXT_MIN_FONT;
 }
 
 // Line/arrow/pen shapes store `points` as offsets relative to shape.x/y
@@ -224,6 +268,11 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     start: Map<string, { x: number; y: number }>;
     leaderStart: { x: number; y: number };
   } | null>(null);
+  // Set right before entering edit mode via "type while selected" (as
+  // opposed to double-click); consumed once by the focus effect below so the
+  // typed character lands in the overlay instead of being lost to the
+  // keystroke that arrived before the overlay existed.
+  const pendingSeedRef = useRef<string | null>(null);
 
   useImperativeHandle(ref, () => ({
     captureThumbnail: () => {
@@ -360,11 +409,29 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         e.preventDefault();
         removeShapes([...selectedIds]);
         setSelectedIds(new Set());
+        return;
+      }
+
+      // Typing while exactly one labelable shape is selected starts editing
+      // it, seeding the character that was just typed — same entry point as
+      // double-click, just triggered differently.
+      if (
+        !editingId &&
+        selectedIds.size === 1 &&
+        e.key.length === 1 &&
+        !e.altKey
+      ) {
+        const [id] = selectedIds;
+        const shape = shapes.find((s) => s.id === id);
+        if (shape && LABELABLE_SHAPE_TYPES.has(shape.type)) {
+          pendingSeedRef.current = e.key;
+          setEditingId(id);
+        }
       }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [canEdit, selectedIds, undo, redo, removeShapes]);
+  }, [canEdit, selectedIds, undo, redo, removeShapes, editingId, shapes]);
 
   useEffect(() => {
     const tr = transformerRef.current;
@@ -392,12 +459,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         const node = shapeRefs.current.get(id);
         const original = shapes.find((s) => s.id === id);
         if (!node || !original) continue;
-        const isCentered = original.type === "ellipse" || original.type === "star" || original.type === "hexagon";
-        updates.push({
-          ...original,
-          x: isCentered ? node.x() - original.width / 2 : node.x(),
-          y: isCentered ? node.y() - original.height / 2 : node.y(),
-        });
+        updates.push({ ...original, x: node.x(), y: node.y() });
       }
       return updates;
     },
@@ -510,9 +572,9 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   // Commits the leader's own position, plus (if a group drag was started)
   // every follower's final position, in one batched write — one undo step
   // regardless of how many shapes moved.
-  function commitGroupDrag(leaderShape: ShapeObj, leaderNode: Konva.Node, leaderIsCentered: boolean) {
-    const leaderX = leaderIsCentered ? leaderNode.x() - leaderShape.width / 2 : leaderNode.x();
-    const leaderY = leaderIsCentered ? leaderNode.y() - leaderShape.height / 2 : leaderNode.y();
+  function commitGroupDrag(leaderShape: ShapeObj, leaderNode: Konva.Node) {
+    const leaderX = leaderNode.x();
+    const leaderY = leaderNode.y();
     const group = dragGroupRef.current;
     dragGroupRef.current = null;
     if (!group) {
@@ -584,6 +646,10 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     if (!editingId) return;
     const el = textEditRef.current;
     if (!el) return;
+    if (pendingSeedRef.current) {
+      el.innerText = (el.innerText || "") + pendingSeedRef.current;
+      pendingSeedRef.current = null;
+    }
     el.focus();
     const range = document.createRange();
     range.selectNodeContents(el);
@@ -603,19 +669,12 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     const text = el.innerText.replace(/\n$/, "");
     setEditingId(null);
 
-    if (shape.type === "frame") {
-      // A frame's label is just a caption — its box size is controlled by
-      // its own resize handles, not by how much text is in the label, and an
-      // empty label is still a meaningful (unlabeled) frame.
-      upsertShape({ ...shape, text });
-      return;
-    }
-
-    if (shape.type === "sticky") {
-      // A blank sticky note is still a meaningful object (the colored box
-      // itself), unlike free-standing text — never auto-delete it for being
-      // empty. Size is never derived from text content — the note must stay
-      // square, so typing more never stretches it; overflow just wraps.
+    if (LABELABLE_SHAPE_TYPES.has(shape.type)) {
+      // A blank shape (or frame caption) is still a meaningful object —
+      // unlike free-standing text, never auto-delete it for being empty. Its
+      // size is user-controlled via resize handles, never derived from text
+      // content: typing more shrinks the label to fit (fitShapeFontSize) or
+      // clips it, it never stretches the shape.
       upsertShape({ ...shape, text });
       return;
     }
@@ -979,81 +1038,103 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
               />
             ))}
           {shapes.map((shape) => {
-            const isCentered = shape.type === "ellipse" || shape.type === "star" || shape.type === "hexagon";
-            const commonProps = {
-              ref: (node: Konva.Node | null) => {
-                if (node) shapeRefs.current.set(shape.id, node);
-                else shapeRefs.current.delete(shape.id);
-              },
-              id: shape.id,
-              x: shape.x,
-              y: shape.y,
-              fill: SHAPE_FILL,
-              stroke: SHAPE_STROKE,
-              strokeWidth: 2,
-              draggable: canEdit && tool === "select",
-              onClick: (e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey),
-              onTap: () => selectShape(shape.id, false),
-              onDragStart: (e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target),
-              onDragMove: handleGroupDragMove,
-              onDragEnd: (e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target, isCentered),
-              onTransformEnd: (e: KonvaEventObject<Event>) => {
-                const node = e.target;
-                const scaleX = node.scaleX();
-                const scaleY = node.scaleY();
-                node.scaleX(1);
-                node.scaleY(1);
-                const width = Math.max(2, shape.width * scaleX);
-                const height = Math.max(2, shape.height * scaleY);
-                upsertShape({
-                  ...shape,
-                  x: isCentered ? node.x() - width / 2 : node.x(),
-                  y: isCentered ? node.y() - height / 2 : node.y(),
-                  width,
-                  height,
-                });
-              },
-            };
+            if (shape.type === "rect" || shape.type === "ellipse" || shape.type === "star" || shape.type === "hexagon") {
+              const labelBox = shapeLabelBox(shape);
+              const shapeFillProps = { id: shape.id, fill: SHAPE_FILL, stroke: SHAPE_STROKE, strokeWidth: 2 };
 
-            if (shape.type === "rect") {
-              return <Rect key={shape.id} {...commonProps} width={shape.width} height={shape.height} />;
-            }
-            if (shape.type === "ellipse") {
+              let inner;
+              if (shape.type === "rect") {
+                inner = <Rect {...shapeFillProps} x={0} y={0} width={shape.width} height={shape.height} />;
+              } else if (shape.type === "ellipse") {
+                inner = (
+                  <Ellipse
+                    {...shapeFillProps}
+                    x={shape.width / 2}
+                    y={shape.height / 2}
+                    radiusX={shape.width / 2}
+                    radiusY={shape.height / 2}
+                  />
+                );
+              } else if (shape.type === "star") {
+                const outerRadius = Math.min(shape.width, shape.height) / 2;
+                inner = (
+                  <Star
+                    {...shapeFillProps}
+                    x={shape.width / 2}
+                    y={shape.height / 2}
+                    numPoints={5}
+                    innerRadius={outerRadius * 0.5}
+                    outerRadius={outerRadius}
+                  />
+                );
+              } else {
+                inner = (
+                  <RegularPolygon
+                    {...shapeFillProps}
+                    x={shape.width / 2}
+                    y={shape.height / 2}
+                    sides={6}
+                    radius={Math.min(shape.width, shape.height) / 2}
+                  />
+                );
+              }
+
               return (
-                <Ellipse
+                <Group
                   key={shape.id}
-                  {...commonProps}
-                  x={shape.x + shape.width / 2}
-                  y={shape.y + shape.height / 2}
-                  radiusX={shape.width / 2}
-                  radiusY={shape.height / 2}
-                />
-              );
-            }
-            if (shape.type === "star") {
-              const outerRadius = Math.min(shape.width, shape.height) / 2;
-              return (
-                <Star
-                  key={shape.id}
-                  {...commonProps}
-                  x={shape.x + shape.width / 2}
-                  y={shape.y + shape.height / 2}
-                  numPoints={5}
-                  innerRadius={outerRadius * 0.5}
-                  outerRadius={outerRadius}
-                />
-              );
-            }
-            if (shape.type === "hexagon") {
-              return (
-                <RegularPolygon
-                  key={shape.id}
-                  {...commonProps}
-                  x={shape.x + shape.width / 2}
-                  y={shape.y + shape.height / 2}
-                  sides={6}
-                  radius={Math.min(shape.width, shape.height) / 2}
-                />
+                  ref={(node: Konva.Node | null) => {
+                    if (node) shapeRefs.current.set(shape.id, node);
+                    else shapeRefs.current.delete(shape.id);
+                  }}
+                  x={shape.x}
+                  y={shape.y}
+                  draggable={canEdit && tool === "select"}
+                  onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey)}
+                  onTap={() => selectShape(shape.id, false)}
+                  onDblClick={() => {
+                    if (!canEdit || tool !== "select") return;
+                    setSelectedIds(new Set([shape.id]));
+                    setEditingId(shape.id);
+                  }}
+                  onDblTap={() => {
+                    if (!canEdit || tool !== "select") return;
+                    setSelectedIds(new Set([shape.id]));
+                    setEditingId(shape.id);
+                  }}
+                  onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
+                  onDragMove={handleGroupDragMove}
+                  onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target)}
+                  onTransformEnd={(e: KonvaEventObject<Event>) => {
+                    const node = e.target;
+                    const scaleX = node.scaleX();
+                    const scaleY = node.scaleY();
+                    node.scaleX(1);
+                    node.scaleY(1);
+                    const width = Math.max(2, shape.width * scaleX);
+                    const height = Math.max(2, shape.height * scaleY);
+                    upsertShape({ ...shape, x: node.x(), y: node.y(), width, height });
+                  }}
+                >
+                  {inner}
+                  {editingId !== shape.id && shape.text && (
+                    <Text
+                      x={labelBox.x}
+                      y={labelBox.y}
+                      width={labelBox.width}
+                      height={labelBox.height}
+                      text={shape.text}
+                      fontSize={fitShapeFontSize(shape.text, labelBox.width, labelBox.height)}
+                      fontFamily={TEXT_FONT_FAMILY}
+                      lineHeight={1.2}
+                      align="center"
+                      verticalAlign="middle"
+                      wrap="word"
+                      ellipsis
+                      fill="oklch(25% 0.02 250)"
+                      listening={false}
+                    />
+                  )}
+                </Group>
               );
             }
             if (shape.type === "line" || shape.type === "arrow") {
@@ -1077,7 +1158,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   onTap={() => selectShape(shape.id, false)}
                   onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
                   onDragMove={handleGroupDragMove}
-                  onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target, false)}
+                  onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target)}
                 />
               );
             }
@@ -1100,7 +1181,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   onTap={() => selectShape(shape.id, false)}
                   onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
                   onDragMove={handleGroupDragMove}
-                  onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target, false)}
+                  onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target)}
                 />
               );
             }
@@ -1134,7 +1215,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   }}
                   onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
                   onDragMove={handleGroupDragMove}
-                  onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target, false)}
+                  onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target)}
                   onTransformEnd={(e: KonvaEventObject<Event>) => {
                     const node = e.target;
                     const scaleX = node.scaleX();
@@ -1205,7 +1286,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                     onTap={() => selectShape(shape.id, false)}
                     onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
                     onDragMove={handleGroupDragMove}
-                    onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target, false)}
+                    onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target)}
                     onTransformEnd={(e: KonvaEventObject<Event>) => {
                       const node = e.target;
                       const scaleX = node.scaleX();
@@ -1324,7 +1405,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   }}
                   onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
                   onDragMove={handleGroupDragMove}
-                  onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target, false)}
+                  onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target)}
                   onTransformEnd={(e: KonvaEventObject<Event>) => {
                     // Square, always — enforced again here regardless of what
                     // the Transformer's keepRatio/corner-only anchors already
@@ -1425,7 +1506,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                 }}
                 onDragStart={(e: KonvaEventObject<DragEvent>) => startGroupDragIfNeeded(shape, e.target)}
                 onDragMove={handleGroupDragMove}
-                onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target, false)}
+                onDragEnd={(e: KonvaEventObject<DragEvent>) => commitGroupDrag(shape, e.target)}
                 onTransformEnd={(e: KonvaEventObject<Event>) => {
                   const node = e.target;
                   const scaleX = node.scaleX();
@@ -1531,6 +1612,39 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                 contentEditable
                 suppressContentEditableWarning
                 style={{ left: pos.x, top: pos.y, fontSize: 13 * scale }}
+                onBlur={() => commitTextEdit(editingShape.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") e.currentTarget.blur();
+                }}
+              >
+                {editingShape.text ?? ""}
+              </div>
+            );
+          }
+
+          if (LABELABLE_SHAPE_TYPES.has(editingShape.type)) {
+            const box = shapeLabelBox(editingShape);
+            const pos = toScreenPoint(stage, { x: editingShape.x + box.x, y: editingShape.y + box.y });
+            return (
+              <div
+                key={editingShape.id}
+                ref={textEditRef}
+                className="text-edit-overlay"
+                contentEditable
+                suppressContentEditableWarning
+                style={{
+                  left: pos.x,
+                  top: pos.y,
+                  width: box.width * scale,
+                  minHeight: box.height * scale,
+                  fontSize: fitShapeFontSize(editingShape.text ?? "", box.width, box.height) * scale,
+                  textAlign: "center",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "transparent",
+                  outline: "none",
+                }}
                 onBlur={() => commitTextEdit(editingShape.id)}
                 onKeyDown={(e) => {
                   if (e.key === "Escape") e.currentTarget.blur();
