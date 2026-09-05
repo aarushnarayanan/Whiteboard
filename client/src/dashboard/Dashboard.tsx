@@ -6,6 +6,7 @@ import type { Me } from "../api/auth";
 import BoardCard from "./BoardCard";
 import TrashedBoardCard from "./TrashedBoardCard";
 import SettingsPanel from "./SettingsPanel";
+import ComingSoonButton from "../ComingSoonButton";
 
 interface DashboardProps {
   me: Me;
@@ -353,10 +354,9 @@ export default function Dashboard({ me, onLogout, onMeUpdated, onAccountDeleted 
             <RecentIcon />
             <span>Recent</span>
           </button>
-          <button type="button" className="dash-nav-item" disabled title="Not built yet">
-            <TemplatesIcon />
+          <ComingSoonButton className="dash-nav-item" label="Templates" icon={<TemplatesIcon />}>
             <span>Templates</span>
-          </button>
+          </ComingSoonButton>
           <button
             type="button"
             className={`dash-nav-item ${nav === "starred" ? "dash-nav-item-active" : ""}`}

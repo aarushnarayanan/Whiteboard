@@ -505,7 +505,7 @@ interface CanvasProps {
   boardId: string;
   role: BoardRole;
   tool: Tool;
-  onToolUsed: () => void;
+  onEscape: () => void;
   onHistoryChange: (state: { canUndo: boolean; canRedo: boolean }) => void;
   onSelectionChange: (count: number) => void;
   me: Me;
@@ -527,7 +527,7 @@ interface PendingUpload {
 }
 
 const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
-  { boardId, role, tool, onToolUsed, onHistoryChange, onSelectionChange, me, stickyColor },
+  { boardId, role, tool, onEscape, onHistoryChange, onSelectionChange, me, stickyColor },
   ref
 ) {
   const canEdit = role !== "viewer";
@@ -723,6 +723,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       }
       if (e.key === "Escape") {
         setSelectedIds(new Set());
+        onEscape(); // the tool is sticky now (F1) — Escape is the one explicit way back to Select
         return;
       }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
@@ -739,7 +740,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [shapes]);
+  }, [shapes, onEscape]);
 
   // Deletes shapes the same as removeShape/removeShapes, but first detaches
   // any connector bound to one of them — writing its last resolved position
@@ -1298,16 +1299,31 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     selection?.addRange(range);
   }, [editingCell]);
 
-  function commitCellEdit() {
+  // Commits the cell being edited, then either stops editing (`next: null` —
+  // Escape, or blurring by clicking elsewhere) or moves straight into another
+  // cell (`next: {row, col}` — Tab/Shift+Tab/Enter), growing the table by one
+  // row first if `next` names a row that doesn't exist yet. The existing
+  // focus-and-select-text effect (keyed on editingCell) handles moving the
+  // caret into that next cell — nothing further to do here for that part.
+  function commitCellAndMoveTo(next: { row: number; col: number } | null) {
     const cell = editingCell;
     const el = cellEditRef.current;
-    setEditingCell(null);
+    setEditingCell(next && cell ? { shapeId: cell.shapeId, ...next } : null);
     if (!cell || !el) return;
     const shape = getShape(cell.shapeId);
     if (!shape) return;
     const cells = (shape.cells ?? emptyTableCells()).map((row) => [...row]);
     cells[cell.row][cell.col] = el.innerText.replace(/\n$/, "");
-    upsertShape({ ...shape, cells });
+
+    let height = shape.height;
+    if (next && next.row >= cells.length) {
+      // Grow by one row of the same height the existing rows already have,
+      // rather than shrinking everything to fit — spreadsheet convention.
+      const rowHeight = shape.height / cells.length;
+      cells.push(new Array(cells[0]?.length ?? TABLE_COLS).fill(""));
+      height = shape.height + rowHeight;
+    }
+    upsertShape({ ...shape, cells, height });
   }
 
   function applyScale(newScale: number, center?: { x: number; y: number }) {
@@ -1397,6 +1413,14 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     }
 
     if (tool === "select") return;
+
+    // F1 made tools stay armed after placing a shape, which opened a race:
+    // clicking away from an edit overlay (a sticky/text box just placed, or a
+    // table cell double-clicked open — editing a cell no longer requires the
+    // Select tool either, see the onDblClick guards above) to commit it is a
+    // click on the canvas, on the *same* still-armed tool. Without this guard
+    // that click would also start placing a brand new shape right there.
+    if (editingId || editingCell) return;
 
     // Starting a connector on a shape's revealed connection point binds that
     // end — the only case where drawing is allowed to begin on top of a
@@ -1560,13 +1584,16 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     const shape = getShape(id);
     if (!shape) return;
 
+    // F1: tools stay armed after placing a shape (Escape is the one way back
+    // to Select — see the window keydown handler above) — none of the
+    // branches below call onEscape() any more.
+
     if (shape.type === "text") {
       if (shape.width < 2 && shape.height < 2) {
         upsertShape({ ...shape, width: MIN_TEXT_WIDTH, height: MIN_TEXT_HEIGHT, fontSize: DEFAULT_FONT_SIZE });
       }
       setSelectedIds(new Set([id]));
       setEditingId(id);
-      onToolUsed();
       return;
     }
 
@@ -1576,7 +1603,6 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       }
       setSelectedIds(new Set([id]));
       setEditingId(id);
-      onToolUsed();
       return;
     }
 
@@ -1585,7 +1611,6 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         upsertShape({ ...shape, width: TABLE_DEFAULT_WIDTH, height: TABLE_DEFAULT_HEIGHT });
       }
       setSelectedIds(new Set([id]));
-      onToolUsed();
       return;
     }
 
@@ -1593,7 +1618,6 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       const [x1, y1, x2, y2] = shape.points ?? [0, 0, 0, 0];
       if (Math.hypot(x2 - x1, y2 - y1) < 2) {
         removeShape(id);
-        onToolUsed();
         return;
       }
       // Releasing over a shape binds the end — more lenient than starting
@@ -1613,28 +1637,23 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         upsertShape({ ...shape, endBind: { shapeId: endTarget.shape.id, anchor: endTarget.anchor } });
       }
       setSelectedIds(new Set([id]));
-      onToolUsed();
       return;
     }
 
     if (shape.type === "pen") {
       if ((shape.points?.length ?? 0) <= 2) {
         removeShape(id);
-        onToolUsed();
         return;
       }
       setSelectedIds(new Set([id]));
-      onToolUsed();
       return;
     }
 
     if (shape.width < 2 && shape.height < 2) {
       removeShape(id);
-      onToolUsed();
       return;
     }
     setSelectedIds(new Set([id]));
-    onToolUsed();
   }
 
   const singleSelectedId = selectedIds.size === 1 ? [...selectedIds][0] : undefined;
@@ -1795,12 +1814,12 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey)}
                   onTap={() => selectShape(shape.id, false)}
                   onDblClick={() => {
-                    if (!canEdit || tool !== "select") return;
+                    if (!canEdit) return;
                     setSelectedIds(new Set([shape.id]));
                     setEditingId(shape.id);
                   }}
                   onDblTap={() => {
-                    if (!canEdit || tool !== "select") return;
+                    if (!canEdit) return;
                     setSelectedIds(new Set([shape.id]));
                     setEditingId(shape.id);
                   }}
@@ -1874,12 +1893,12 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                     onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey)}
                     onTap={() => selectShape(shape.id, false)}
                     onDblClick={() => {
-                      if (!canEdit || tool !== "select") return;
+                      if (!canEdit) return;
                       setSelectedIds(new Set([shape.id]));
                       setEditingId(shape.id);
                     }}
                     onDblTap={() => {
-                      if (!canEdit || tool !== "select") return;
+                      if (!canEdit) return;
                       setSelectedIds(new Set([shape.id]));
                       setEditingId(shape.id);
                     }}
@@ -1983,12 +2002,12 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey)}
                   onTap={() => selectShape(shape.id, false)}
                   onDblClick={() => {
-                    if (!canEdit || tool !== "select") return;
+                    if (!canEdit) return;
                     setSelectedIds(new Set([shape.id]));
                     setEditingId(shape.id);
                   }}
                   onDblTap={() => {
-                    if (!canEdit || tool !== "select") return;
+                    if (!canEdit) return;
                     setSelectedIds(new Set([shape.id]));
                     setEditingId(shape.id);
                   }}
@@ -2043,8 +2062,13 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             }
             if (shape.type === "table") {
               const cells = shape.cells ?? emptyTableCells();
-              const cellW = shape.width / TABLE_COLS;
-              const cellH = shape.height / TABLE_ROWS;
+              // Not the TABLE_ROWS/TABLE_COLS constants: a table can now grow
+              // rows past its starting 3x3 (see commitCellAndMoveTo), so its
+              // on-screen geometry has to follow the actual data.
+              const rows = cells.length;
+              const cols = cells[0]?.length ?? TABLE_COLS;
+              const cellW = shape.width / cols;
+              const cellH = shape.height / rows;
               return (
                 <Group key={shape.id}>
                   <Rect
@@ -2081,7 +2105,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                       });
                     }}
                   />
-                  {[1, 2].map((i) => (
+                  {Array.from({ length: cols - 1 }, (_, i) => i + 1).map((i) => (
                     <Line
                       key={`v${i}`}
                       points={[shape.x + cellW * i, shape.y, shape.x + cellW * i, shape.y + shape.height]}
@@ -2090,7 +2114,7 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                       listening={false}
                     />
                   ))}
-                  {[1, 2].map((i) => (
+                  {Array.from({ length: rows - 1 }, (_, i) => i + 1).map((i) => (
                     <Line
                       key={`h${i}`}
                       points={[shape.x, shape.y + cellH * i, shape.x + shape.width, shape.y + cellH * i]}
@@ -2114,12 +2138,12 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                             onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey)}
                             onTap={() => selectShape(shape.id, false)}
                             onDblClick={() => {
-                              if (!canEdit || tool !== "select") return;
+                              if (!canEdit) return;
                               setSelectedIds(new Set([shape.id]));
                               setEditingCell({ shapeId: shape.id, row: r, col: c });
                             }}
                             onDblTap={() => {
-                              if (!canEdit || tool !== "select") return;
+                              if (!canEdit) return;
                               setSelectedIds(new Set([shape.id]));
                               setEditingCell({ shapeId: shape.id, row: r, col: c });
                             }}
@@ -2173,12 +2197,12 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                   onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey)}
                   onTap={() => selectShape(shape.id, false)}
                   onDblClick={() => {
-                    if (!canEdit || tool !== "select") return;
+                    if (!canEdit) return;
                     setSelectedIds(new Set([shape.id]));
                     setEditingId(shape.id);
                   }}
                   onDblTap={() => {
-                    if (!canEdit || tool !== "select") return;
+                    if (!canEdit) return;
                     setSelectedIds(new Set([shape.id]));
                     setEditingId(shape.id);
                   }}
@@ -2274,12 +2298,12 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                 onClick={(e: KonvaEventObject<MouseEvent>) => selectShape(shape.id, e.evt.shiftKey)}
                 onTap={() => selectShape(shape.id, false)}
                 onDblClick={() => {
-                  if (!canEdit || tool !== "select") return;
+                  if (!canEdit) return;
                   setSelectedIds(new Set([shape.id]));
                   setEditingId(shape.id);
                 }}
                 onDblTap={() => {
-                  if (!canEdit || tool !== "select") return;
+                  if (!canEdit) return;
                   setSelectedIds(new Set([shape.id]));
                   setEditingId(shape.id);
                 }}
@@ -2542,13 +2566,16 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
           const shape = shapes.find((s) => s.id === editingCell.shapeId);
           const stage = stageRef.current;
           if (!shape || !stage) return null;
-          const cellW = shape.width / TABLE_COLS;
-          const cellH = shape.height / TABLE_ROWS;
+          const cells = shape.cells ?? emptyTableCells();
+          const rows = cells.length;
+          const cols = cells[0]?.length ?? TABLE_COLS;
+          const cellW = shape.width / cols;
+          const cellH = shape.height / rows;
           const pos = toScreenPoint(stage, {
             x: shape.x + editingCell.col * cellW + 6,
             y: shape.y + editingCell.row * cellH + 6,
           });
-          const cellText = (shape.cells ?? emptyTableCells())[editingCell.row][editingCell.col];
+          const cellText = cells[editingCell.row]?.[editingCell.col] ?? "";
           return (
             <div
               key={`${editingCell.shapeId}-${editingCell.row}-${editingCell.col}`}
@@ -2565,9 +2592,36 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
                 background: "transparent",
                 outline: "none",
               }}
-              onBlur={commitCellEdit}
+              onBlur={() => commitCellAndMoveTo(null)}
               onKeyDown={(e) => {
-                if (e.key === "Escape") e.currentTarget.blur();
+                // Every branch here must preventDefault before the browser's
+                // own Tab handling ever runs — that's what used to send focus
+                // to the browser chrome and silently drop whatever was typed.
+                if (e.key === "Escape") {
+                  e.currentTarget.blur();
+                  return;
+                }
+                if (e.key === "Tab") {
+                  e.preventDefault();
+                  const { row, col } = editingCell;
+                  if (e.shiftKey) {
+                    if (col > 0) commitCellAndMoveTo({ row, col: col - 1 });
+                    else if (row > 0) commitCellAndMoveTo({ row: row - 1, col: cols - 1 });
+                    // else: first cell of the table — nothing to move back to.
+                  } else if (col < cols - 1) {
+                    commitCellAndMoveTo({ row, col: col + 1 });
+                  } else {
+                    // Last column: wrap to the next row, growing the table by
+                    // one row if this was also the last row.
+                    commitCellAndMoveTo({ row: row + 1, col: 0 });
+                  }
+                  return;
+                }
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  const { row, col } = editingCell;
+                  commitCellAndMoveTo({ row: row + 1, col });
+                }
               }}
             >
               {cellText}

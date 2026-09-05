@@ -1,5 +1,6 @@
-import { useRef, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import type { Tool } from "./types";
+import ComingSoonButton from "../ComingSoonButton";
 
 interface ToolbarProps {
   tool: Tool;
@@ -210,12 +211,31 @@ export default function Toolbar({
 }: ToolbarProps) {
   const [shapesOpen, setShapesOpen] = useState(false);
   const [stickyOpen, setStickyOpen] = useState(false);
+  const [lastShapeTool, setLastShapeTool] = useState<(typeof SHAPE_ITEMS)[number]["tool"]>("rect");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
   const isShapeTool =
     tool === "rect" || tool === "ellipse" || tool === "line" || tool === "arrow" || tool === "star" || tool === "hexagon";
 
+  // A real click outside the toolbar (canvas, page chrome) closes any open
+  // flyout. Deliberately not a full-screen backdrop div: that pattern used to
+  // sit visually above every other toolbar button (see the CSS note by
+  // toolbar-flyout-backdrop's removal), swallowing a click aimed at, say,
+  // Eraser instead of letting it reach Eraser's own handler.
+  useEffect(() => {
+    function handleOutside(e: MouseEvent) {
+      if (toolbarRef.current && !toolbarRef.current.contains(e.target as Node)) {
+        setShapesOpen(false);
+        setStickyOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, []);
+
   function selectTool(t: Tool) {
     onChange(t);
+    if (SHAPE_ITEMS.some((item) => item.tool === t)) setLastShapeTool(t as (typeof SHAPE_ITEMS)[number]["tool"]);
     setShapesOpen(false);
     setStickyOpen(false);
   }
@@ -227,8 +247,25 @@ export default function Toolbar({
     setShapesOpen(false);
   }
 
+  // Arms the last-used shape immediately, same click that opens the flyout —
+  // the flyout is then just an optional way to change which shape, not a
+  // required second step.
+  function openShapes() {
+    onChange(lastShapeTool);
+    setStickyOpen(false);
+    setShapesOpen((s) => !s);
+  }
+
+  // Arms sticky (with whatever color was last used) immediately; the swatch
+  // row is an optional follow-up, same reasoning as openShapes above.
+  function openSticky() {
+    onChange("sticky");
+    setShapesOpen(false);
+    setStickyOpen((s) => !s);
+  }
+
   return (
-    <div className="toolbar" role="toolbar" aria-label="Drawing tools">
+    <div className="toolbar" role="toolbar" aria-label="Drawing tools" ref={toolbarRef}>
       <button
         type="button"
         className="toolbar-button"
@@ -265,28 +302,25 @@ export default function Toolbar({
           className="toolbar-button"
           aria-pressed={isShapeTool}
           title="Shapes"
-          onClick={() => setShapesOpen((s) => !s)}
+          onClick={openShapes}
         >
           <ShapesIcon />
         </button>
         {shapesOpen && (
-          <>
-            <div className="toolbar-flyout-backdrop" onClick={() => setShapesOpen(false)} />
-            <div className="toolbar-flyout">
-              {SHAPE_ITEMS.map((item) => (
-                <button
-                  key={item.label}
-                  type="button"
-                  className="toolbar-flyout-button"
-                  title={item.label}
-                  aria-pressed={item.tool === tool}
-                  onClick={() => selectTool(item.tool)}
-                >
-                  {item.icon}
-                </button>
-              ))}
-            </div>
-          </>
+          <div className="toolbar-flyout">
+            {SHAPE_ITEMS.map((item) => (
+              <button
+                key={item.label}
+                type="button"
+                className="toolbar-flyout-button"
+                title={item.label}
+                aria-pressed={item.tool === tool}
+                onClick={() => selectTool(item.tool)}
+              >
+                {item.icon}
+              </button>
+            ))}
+          </div>
         )}
       </div>
 
@@ -305,27 +339,24 @@ export default function Toolbar({
           className="toolbar-button"
           aria-pressed={tool === "sticky"}
           title="Sticky note"
-          onClick={() => setStickyOpen((s) => !s)}
+          onClick={openSticky}
         >
           <StickyIcon />
         </button>
         {stickyOpen && (
-          <>
-            <div className="toolbar-flyout-backdrop" onClick={() => setStickyOpen(false)} />
-            <div className="toolbar-flyout toolbar-sticky-flyout">
-              {STICKY_COLORS.map((c) => (
-                <button
-                  key={c.value}
-                  type="button"
-                  className="toolbar-sticky-swatch"
-                  style={{ background: c.value }}
-                  title={c.label}
-                  aria-pressed={tool === "sticky" && stickyColor === c.value}
-                  onClick={() => selectSticky(c.value)}
-                />
-              ))}
-            </div>
-          </>
+          <div className="toolbar-flyout toolbar-sticky-flyout">
+            {STICKY_COLORS.map((c) => (
+              <button
+                key={c.value}
+                type="button"
+                className="toolbar-sticky-swatch"
+                style={{ background: c.value }}
+                title={c.label}
+                aria-pressed={tool === "sticky" && stickyColor === c.value}
+                onClick={() => selectSticky(c.value)}
+              />
+            ))}
+          </div>
         )}
       </div>
       <button
@@ -368,9 +399,7 @@ export default function Toolbar({
           e.target.value = ""; // so picking the same file twice still fires
         }}
       />
-      <button type="button" className="toolbar-button" disabled title="Not built yet">
-        <CommentIcon />
-      </button>
+      <ComingSoonButton className="toolbar-button" label="Comments" icon={<CommentIcon />} />
 
       <div className="toolbar-divider" />
 

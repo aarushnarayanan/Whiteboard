@@ -30,17 +30,17 @@ scope changes while building it, update its detail section, not just the checkbo
 
 ### Tier 2 — Friction (people work around these, and will resent every one)
 
-- [ ] **F1** — Every tool resets to Select after one use
+- [x] **F1** — Every tool resets to Select after one use
 - [ ] **F2** — Objects cannot be styled after creation (no floating context toolbar)
 - [ ] **F3** — No right-click menu; no duplicate
 - [ ] **F4** — No keyboard shortcuts for tools
-- [ ] **F5** — Tab inside a table escapes to browser chrome, loses text
+- [x] **F5** — Tab inside a table escapes to browser chrome, loses text *(scope cut — see note below)*
 - [ ] **F6** — Boards are effectively unfindable (naming/tagging/content search)
 - [ ] **F7** — Cannot tell who else is on the board (presence/follow/spotlight)
 - [ ] **F8** — No version history
-- [ ] **F9** — Five live buttons do nothing, silently
+- [x] **F9** — Five live buttons do nothing, silently
 - [ ] **F10** — Canvas navigation/orientation (Fit to screen, minimap, zoom-to-selection)
-- [ ] **F11** — Sticky/shape tools don't look armed (two-click cost, lying active-state)
+- [x] **F11** — Sticky/shape tools don't look armed (two-click cost, lying active-state)
 
 ### Tier 3 — Bets (reasons to choose this over FigJam/Miro, once blockers are gone)
 
@@ -684,6 +684,25 @@ Shift+arrows          Nudge 10px
 ---
 
 ### F5 — Tab inside a table escapes to browser chrome and loses your text
+
+**Severity:** FRICTION · **Status:** SHIPPED IN PART — see scope note below
+
+**Scope decision:** shipped Tab/Shift+Tab/Enter cell navigation that never leaks a keystroke to the
+browser and never discards text, plus the table-growth (new row at the end) that makes Tab's
+"creates a new row" behavior real rather than cosmetic — table row/column count was previously a
+hardcoded `3×3` constant regardless of the shape's actual data, fixed as part of this pass. Also
+fixed a real regression this surfaced: F1 (tools stay armed) had silently broken double-click-to-
+edit on every shape type immediately after placing it, since the edit guards required
+`tool === "select"` — relaxed to just require edit permission, since a double-click always targets
+an existing shape and was never ambiguous with placing a new one.
+
+**Deliberately deferred, each a real separate feature:** arrow-key navigation between cells while
+not editing (needs a new "selected but not editing" cell state that doesn't exist yet); hover
+add/remove row/column controls (new persistent UI chrome); pasting multi-cell spreadsheet data with
+automatic row *and* column growth (needs clipboard TSV/CSV parsing); draggable column widths/row
+heights (its own resize-drag interaction). Table content in board search stays blocked on F6.
+
+**Original issue below.**
 
 **Severity:** FRICTION · **Status:** VERIFIED
 

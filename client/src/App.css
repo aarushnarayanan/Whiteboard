@@ -448,6 +448,56 @@
   cursor: pointer;
 }
 
+/* ComingSoonButton — a control for a real, named-in-the-backlog feature that
+   isn't built yet. Never a plain `disabled` (can't fire onClick, so a click
+   gets zero feedback) — looks disabled, explains itself on hover, answers a
+   click with a dismissing callout. Used inside toolbars, header icon rows,
+   dropdown menus, and the dashboard sidebar, so it only adds the "soft
+   disabled" look on top of whatever layout class (toolbar-button,
+   board-header-icon-btn, dash-nav-item, or a plain menu button) it's paired
+   with — it owns no layout/sizing of its own. */
+.coming-soon-wrap {
+  position: relative;
+  display: block;
+}
+.coming-soon-button {
+  opacity: 0.5;
+  cursor: default;
+}
+.coming-soon-button:hover {
+  background: none !important;
+}
+.coming-soon-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+}
+.coming-soon-callout {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  background: var(--ink-900, #1a1a1a);
+  color: #fff;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  box-shadow: var(--shadow-lg);
+  z-index: 201;
+  pointer-events: none;
+  animation: coming-soon-fade 2s ease forwards;
+}
+@keyframes coming-soon-fade {
+  0%,
+  75% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
 .board-header-tag-remove {
   display: block;
   width: 100%;
@@ -559,12 +609,6 @@
 
 .toolbar-flyout-wrap {
   position: relative;
-}
-
-.toolbar-flyout-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 9;
 }
 
 .toolbar-flyout {

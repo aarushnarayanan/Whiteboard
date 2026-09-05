@@ -12,6 +12,7 @@ import {
 } from "../api/boards";
 import { createTag, listTags, type Tag } from "../api/tags";
 import type { ExportPngOptions } from "./Canvas";
+import ComingSoonButton from "../ComingSoonButton";
 
 interface BoardHeaderProps {
   board: BoardSummary;
@@ -323,9 +324,7 @@ export default function BoardHeader({
               >
                 Export as PNG
               </button>
-              <button type="button" disabled title="Not built yet">
-                Export as PDF
-              </button>
+              <ComingSoonButton label="PDF export">Export as PDF</ComingSoonButton>
             </div>
           </>
         )}
@@ -437,15 +436,9 @@ export default function BoardHeader({
 
       <div className="board-header-spacer" />
 
-      <button type="button" className="board-header-icon-btn" disabled title="Not built yet">
-        <CommentIcon />
-      </button>
-      <button type="button" className="board-header-icon-btn" disabled title="Not built yet">
-        <HistoryIcon />
-      </button>
-      <button type="button" className="board-header-icon-btn" disabled title="Not built yet">
-        <PresentIcon />
-      </button>
+      <ComingSoonButton className="board-header-icon-btn" label="Comments" icon={<CommentIcon />} />
+      <ComingSoonButton className="board-header-icon-btn" label="Version history" icon={<HistoryIcon />} />
+      <ComingSoonButton className="board-header-icon-btn" label="Presentation mode" icon={<PresentIcon />} />
 
       <div className="board-header-divider" />
 
@@ -534,15 +527,21 @@ export default function BoardHeader({
           <>
             <div className="board-header-menu-backdrop" onClick={() => setHeaderMenuOpen(false)} />
             <div className="board-header-menu board-header-menu-right">
-              <button type="button" disabled title="Not built yet">
-                Board settings
-              </button>
               <button type="button" disabled={duplicating} onClick={handleDuplicate}>
                 {duplicating ? "Duplicating…" : "Duplicate board"}
               </button>
-              <button type="button" disabled title="Not built yet">
-                Export
+              <button
+                type="button"
+                onClick={() => {
+                  setHeaderMenuOpen(false);
+                  setExportError(null);
+                  if (selectionCount === 0) setExportScope("board");
+                  setExporting(true);
+                }}
+              >
+                Export as PNG
               </button>
+              <ComingSoonButton label="PDF export">Export as PDF</ComingSoonButton>
               <div className="board-header-menu-divider" />
               <button
                 type="button"

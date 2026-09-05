@@ -111,7 +111,7 @@ export default function BoardRoute({ me }: { me: Me }) {
           boardId={board.id}
           role={board.role}
           tool={tool}
-          onToolUsed={() => setTool("select")}
+          onEscape={() => setTool("select")}
           onHistoryChange={setHistory}
           onSelectionChange={setSelectionCount}
           me={me}
