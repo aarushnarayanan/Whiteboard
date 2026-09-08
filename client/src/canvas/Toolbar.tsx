@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import type { Tool } from "./types";
-import ComingSoonButton from "../ComingSoonButton";
 
 interface ToolbarProps {
   tool: Tool;
@@ -399,7 +398,15 @@ export default function Toolbar({
           e.target.value = ""; // so picking the same file twice still fires
         }}
       />
-      <ComingSoonButton className="toolbar-button" label="Comments" icon={<CommentIcon />} />
+      <button
+        type="button"
+        className="toolbar-button"
+        aria-pressed={tool === "comment"}
+        title="Comment"
+        onClick={() => selectTool("comment")}
+      >
+        <CommentIcon />
+      </button>
 
       <div className="toolbar-divider" />
 

@@ -11,8 +11,10 @@ import {
   type BoardSummary,
 } from "../api/boards";
 import { createTag, listTags, type Tag } from "../api/tags";
+import type { CommentThread } from "../api/comments";
 import type { ExportPngOptions } from "./Canvas";
 import ComingSoonButton from "../ComingSoonButton";
+import CommentComposer from "./CommentComposer";
 
 interface BoardHeaderProps {
   board: BoardSummary;
@@ -24,6 +26,11 @@ interface BoardHeaderProps {
   /** Returns null when there was nothing to export. */
   onExportPng: (options: ExportPngOptions) => string | null;
   selectionCount: number;
+  threads: CommentThread[];
+  canEdit: boolean;
+  onReply: (threadId: string, body: string, mentionedUserIds: string[]) => void;
+  onResolve: (threadId: string, resolved: boolean) => void;
+  onPanToThread: (threadId: string) => void;
 }
 
 function BackIcon() {
@@ -87,6 +94,35 @@ function KebabIcon() {
   );
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Mentions are stored as plain "@Name" text plus the mentioned ids (see
+// CommentComposer's deriveMentions) — this is the read side: split on just
+// those "@Name" occurrences and highlight them, rather than storing or
+// parsing anything richer than plain text.
+function CommentBody({ text, mentionedUserIds, members }: { text: string; mentionedUserIds: string[]; members: BoardMember[] }) {
+  const mentionedNames = members.filter((m) => mentionedUserIds.includes(m.userId)).map((m) => m.name);
+  if (mentionedNames.length === 0) return <>{text}</>;
+
+  const pattern = new RegExp(`(${mentionedNames.map((n) => `@${escapeRegExp(n)}`).join("|")})`, "g");
+  const parts = text.split(pattern);
+  return (
+    <>
+      {parts.map((part, i) =>
+        mentionedNames.includes(part.slice(1)) && part.startsWith("@") ? (
+          <span key={i} className="comment-mention-highlight">
+            {part}
+          </span>
+        ) : (
+          part
+        ),
+      )}
+    </>
+  );
+}
+
 export default function BoardHeader({
   board,
   onBack,
@@ -96,8 +132,19 @@ export default function BoardHeader({
   onTagged,
   onExportPng,
   selectionCount,
+  threads,
+  canEdit,
+  onReply,
+  onResolve,
+  onPanToThread,
 }: BoardHeaderProps) {
   const isOwner = board.role === "owner";
+
+  const [commentsOpen, setCommentsOpen] = useState(false);
+  const [showResolved, setShowResolved] = useState(false);
+  const [expandedThreadId, setExpandedThreadId] = useState<string | null>(null);
+  const unresolvedCount = threads.filter((t) => !t.resolved).length;
+  const visibleThreads = threads.filter((t) => showResolved || !t.resolved);
 
   const [titleMenuOpen, setTitleMenuOpen] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
@@ -125,13 +172,16 @@ export default function BoardHeader({
   const [newTagName, setNewTagName] = useState("");
   const [tagError, setTagError] = useState<string | null>(null);
 
+  // Was gated on `sharing` (only fetched when the Share panel opened) — now
+  // unconditional, since the comments panel's @mention autocomplete needs
+  // this list too and has no reason to wait for Share to have been opened
+  // first.
   useEffect(() => {
-    if (!sharing) return;
     setMembersError(null);
     listMembers(board.id)
       .then(setMembers)
       .catch((err) => setMembersError(err instanceof Error ? err.message : "couldn't load members"));
-  }, [sharing, board.id]);
+  }, [board.id]);
 
   useEffect(() => {
     if (!tagging) return;
@@ -436,7 +486,91 @@ export default function BoardHeader({
 
       <div className="board-header-spacer" />
 
-      <ComingSoonButton className="board-header-icon-btn" label="Comments" icon={<CommentIcon />} />
+      <div className="board-header-comments-wrap">
+        <button
+          type="button"
+          className="board-header-icon-btn"
+          onClick={() => setCommentsOpen((o) => !o)}
+          aria-label="Comments"
+          title="Comments"
+        >
+          <CommentIcon />
+          {unresolvedCount > 0 && <span className="board-header-comments-badge">{unresolvedCount}</span>}
+        </button>
+        {commentsOpen && (
+          <>
+            <div className="board-header-menu-backdrop" onClick={() => setCommentsOpen(false)} />
+            <div className="board-header-comments-panel">
+              <div className="board-header-comments-panel-head">
+                <span className="board-header-tag-popover-label">Comments</span>
+                <label className="board-header-comments-toggle">
+                  <input type="checkbox" checked={showResolved} onChange={(e) => setShowResolved(e.target.checked)} />
+                  Show resolved
+                </label>
+              </div>
+              {visibleThreads.length === 0 && (
+                <p className="board-header-comments-empty">
+                  {showResolved ? "No comments yet." : "No open comments."}
+                </p>
+              )}
+              <div className="board-header-comments-list">
+                {visibleThreads.map((thread) => {
+                  const first = thread.messages[0];
+                  const expanded = expandedThreadId === thread.id;
+                  return (
+                    <div key={thread.id} className={`board-header-comment-thread ${thread.resolved ? "board-header-comment-thread-resolved" : ""}`}>
+                      <button
+                        type="button"
+                        className="board-header-comment-summary"
+                        onClick={() => {
+                          setExpandedThreadId(expanded ? null : thread.id);
+                          onPanToThread(thread.id);
+                        }}
+                      >
+                        <span className="board-header-comment-author">{first?.authorName ?? thread.authorName}</span>
+                        <span className="board-header-comment-body">
+                          {first && <CommentBody text={first.body} mentionedUserIds={first.mentionedUserIds} members={members ?? []} />}
+                        </span>
+                        {thread.messages.length > 1 && (
+                          <span className="board-header-comment-reply-count">{thread.messages.length - 1} repl{thread.messages.length === 2 ? "y" : "ies"}</span>
+                        )}
+                      </button>
+                      {expanded && (
+                        <div className="board-header-comment-detail">
+                          {thread.messages.slice(1).map((m) => (
+                            <div key={m.id} className="board-header-comment-message">
+                              <span className="board-header-comment-author">{m.authorName}</span>
+                              <span className="board-header-comment-body">
+                                <CommentBody text={m.body} mentionedUserIds={m.mentionedUserIds} members={members ?? []} />
+                              </span>
+                            </div>
+                          ))}
+                          {canEdit && (
+                            <>
+                              <CommentComposer
+                                members={members ?? []}
+                                placeholder="Reply…"
+                                onSubmit={(body, mentionedUserIds) => onReply(thread.id, body, mentionedUserIds)}
+                              />
+                              <button
+                                type="button"
+                                className="board-header-comment-resolve"
+                                onClick={() => onResolve(thread.id, !thread.resolved)}
+                              >
+                                {thread.resolved ? "Reopen" : "Resolve"}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
       <ComingSoonButton className="board-header-icon-btn" label="Version history" icon={<HistoryIcon />} />
       <ComingSoonButton className="board-header-icon-btn" label="Presentation mode" icon={<PresentIcon />} />
 

@@ -24,7 +24,7 @@ scope changes while building it, update its detail section, not just the checkbo
 - [x] **B4** — Shapes cannot hold text
 - [x] **B5** — Arrows/lines don't attach to shapes *(ship right after B4)*
 - [x] **B6** — No images (paste / drag-drop / upload)
-- [ ] **B7** — No comments
+- [x] **B7** — No comments *(scope cut — see note below)*
 - [x] **B8** — Nothing can leave the board (export) *(scope cut down to PNG — see note below)*
 - [ ] **B9** — No responsive layout (blocker for the student/mobile audience specifically)
 
@@ -392,6 +392,25 @@ unusable). Add alt text for accessibility and F6 content search. A crop tool is 
 ---
 
 ### B7 — No comments
+
+**Severity:** BLOCKER · **Status:** SHIPPED IN PART — see scope note below
+
+**Scope decision:** threaded comments shipped with both anchor types from the spec — a comment can
+pin to a fixed canvas point (comment tool, click to drop) or to a specific object (select it,
+Cmd/Ctrl+Shift+M), and an object-anchored pin tracks the object live during a drag, not just after
+it settles, reusing the connector system's existing reroute machinery. Deleting an anchored object
+detaches its threads to their last on-screen position rather than destroying them. Threads support
+replies, @mentions (highlighted on render), resolve/unresolve, and a comments panel in the header;
+the dashboard board card shows an unresolved-comment badge. Live sync between sessions is a 4s REST
+poll, not a new WebSocket channel — a deliberate simplicity tradeoff over per-keystroke latency, on
+the theory that a few seconds is fine for a feature that isn't per-keystroke; upgrade path is a
+dedicated channel mirroring the sync socket's own broadcast pattern if that latency ever actually
+bothers someone. Deliberately deferred, each real separate work: @mention notification delivery
+(email/push — the spec itself allows this as a follow-up), a distinct Commenter role (editor already
+covers "can comment" for this pass), thread deletion (the spec only ever asks for resolving), and pin
+clustering/fading at low zoom (a named edge-case, not required behavior).
+
+**Original issue below.**
 
 **Severity:** BLOCKER · **Status:** VERIFIED
 

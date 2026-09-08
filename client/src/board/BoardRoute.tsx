@@ -5,7 +5,8 @@ import Toolbar from "../canvas/Toolbar";
 import BoardHeader from "../canvas/BoardHeader";
 import type { Tool } from "../canvas/types";
 import type { Me } from "../api/auth";
-import { BoardAccessError, getBoard, uploadThumbnail, type BoardSummary } from "../api/boards";
+import { BoardAccessError, getBoard, listMembers, uploadThumbnail, type BoardMember, type BoardSummary } from "../api/boards";
+import { useComments } from "./useComments";
 
 type State =
   | { status: "loading" }
@@ -20,7 +21,9 @@ export default function BoardRoute({ me }: { me: Me }) {
   const [stickyColor, setStickyColor] = useState("#fff3c4");
   const [history, setHistory] = useState({ canUndo: false, canRedo: false });
   const [selectionCount, setSelectionCount] = useState(0);
+  const [members, setMembers] = useState<BoardMember[]>([]);
   const canvasRef = useRef<CanvasHandle>(null);
+  const { threads, createThread, reply, resolve, detachAnchor } = useComments(boardId!);
 
   useEffect(() => {
     setState({ status: "loading" });
@@ -29,6 +32,15 @@ export default function BoardRoute({ me }: { me: Me }) {
     getBoard(boardId!)
       .then((board) => setState({ status: "ready", board }))
       .catch((err) => setState({ status: "error", kind: err instanceof BoardAccessError ? err.status : 404 }));
+  }, [boardId]);
+
+  // Needed for @mention autocomplete wherever a comment gets composed — kept
+  // separate from BoardHeader's own member fetch, which is scoped to the
+  // Share panel's lazier open-on-demand lifecycle.
+  useEffect(() => {
+    listMembers(boardId!)
+      .then(setMembers)
+      .catch(() => {});
   }, [boardId]);
 
   // Lives here rather than in Canvas because the filename comes from the board
@@ -104,6 +116,11 @@ export default function BoardRoute({ me }: { me: Me }) {
         onTagged={(tagId) => setState((s) => (s.status === "ready" ? { status: "ready", board: { ...s.board, tagId } } : s))}
         onExportPng={handleExportPng}
         selectionCount={selectionCount}
+        threads={threads}
+        canEdit={canEdit}
+        onReply={reply}
+        onResolve={resolve}
+        onPanToThread={(threadId) => canvasRef.current?.panToThread(threadId)}
       />
       <div className="board-canvas-area">
         <Canvas
@@ -116,6 +133,12 @@ export default function BoardRoute({ me }: { me: Me }) {
           onSelectionChange={setSelectionCount}
           me={me}
           stickyColor={stickyColor}
+          threads={threads}
+          members={members}
+          onCreateThread={createThread}
+          onDetachThreadAnchor={detachAnchor}
+          onReplyToThread={reply}
+          onResolveThread={resolve}
         />
         {canEdit && (
           <Toolbar

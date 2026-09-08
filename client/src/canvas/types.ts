@@ -11,7 +11,8 @@ export type Tool =
   | "frame"
   | "table"
   | "pen"
-  | "eraser";
+  | "eraser"
+  | "comment";
 
 export type ShapeType =
   | "rect"

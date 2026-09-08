@@ -1,4 +1,16 @@
-import { bigserial, boolean, customType, index, pgEnum, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import {
+  bigserial,
+  boolean,
+  customType,
+  doublePrecision,
+  index,
+  pgEnum,
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+  uuid,
+} from "drizzle-orm/pg-core";
 
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   dataType() {
@@ -72,3 +84,38 @@ export const boardSnapshots = pgTable("board_snapshots", {
   snapshot: bytea("snapshot").notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// A comment pins to exactly one of a fixed canvas point (x, y) or a shape —
+// enforced in the route handler, not here. A shape lives inside the board's
+// Yjs doc, not a Postgres row, so shapeId is a plain opaque id, no FK.
+export const commentThreads = pgTable("comment_threads", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  boardId: uuid("board_id")
+    .notNull()
+    .references(() => boards.id, { onDelete: "cascade" }),
+  authorId: uuid("author_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  x: doublePrecision("x"),
+  y: doublePrecision("y"),
+  shapeId: text("shape_id"),
+  resolved: boolean("resolved").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const commentMessages = pgTable(
+  "comment_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    threadId: uuid("thread_id")
+      .notNull()
+      .references(() => commentThreads.id, { onDelete: "cascade" }),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    mentionedUserIds: uuid("mentioned_user_ids").array().notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("comment_messages_thread_id_idx").on(table.threadId, table.createdAt)],
+);

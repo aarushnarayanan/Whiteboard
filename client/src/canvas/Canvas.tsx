@@ -28,8 +28,10 @@ import Konva from "konva";
 import type { KonvaEventObject } from "konva/lib/Node";
 import type { Tool, ShapeObj, ConnectorAnchor, ConnectorBinding } from "./types";
 import { useBoardDoc } from "../board/useBoardDoc";
-import { boardImageUrl, uploadBoardImage } from "../api/boards";
+import { boardImageUrl, uploadBoardImage, type BoardMember } from "../api/boards";
 import type { Me } from "../api/auth";
+import type { CommentAnchor, CommentThread } from "../api/comments";
+import CommentComposer from "./CommentComposer";
 
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 4;
@@ -245,6 +247,51 @@ function resolveConnectorEndpoints(
   const start = resolve(shape.startBind, { x: shape.x + rx1, y: shape.y + ry1 });
   const end = resolve(shape.endBind, { x: shape.x + rx2, y: shape.y + ry2 });
   return { x1: start.x, y1: start.y, x2: end.x, y2: end.y };
+}
+
+// A fixed point directly, or the shape's "top" anchor (live, if the shape is
+// mid-drag) when pinned to a shape instead — reuses anchorPoint rather than
+// inventing separate pin geometry. Shared by resolveCommentAnchor below
+// (persisted threads) and the draft-composer overlay (an anchor chosen but
+// not yet saved as a thread at all).
+function resolveAnchorPoint(
+  anchor: CommentAnchor,
+  allShapes: ShapeObj[],
+  shapeRefs: Map<string, Konva.Node>,
+): { x: number; y: number } | null {
+  if ("x" in anchor) return { x: anchor.x, y: anchor.y };
+  const target = allShapes.find((s) => s.id === anchor.shapeId);
+  if (!target) return null;
+  return anchorPoint(target, "top", shapeRefs.get(anchor.shapeId));
+}
+
+// The structural twin of resolveConnectorEndpoints, for a comment pin.
+function resolveCommentAnchor(
+  thread: CommentThread,
+  allShapes: ShapeObj[],
+  shapeRefs: Map<string, Konva.Node>,
+): { x: number; y: number } | null {
+  if (thread.x !== null && thread.y !== null) return { x: thread.x, y: thread.y };
+  if (!thread.shapeId) return null;
+  return resolveAnchorPoint({ shapeId: thread.shapeId }, allShapes, shapeRefs);
+}
+
+// A shape anchor always resolves to the same point (its "top center" — there's
+// no per-click position for a Cmd+Shift+M comment), so two threads pinned to
+// the same shape would otherwise stack exactly on top of each other with only
+// the most-recently-created one clickable. Grouping by shape id gives each
+// shape a single pin instead; a point-anchored thread has no shape to share,
+// so it keeps its own pin exactly as before.
+function groupThreadsForPins(threads: CommentThread[]): Map<string, CommentThread[]> {
+  const groups = new Map<string, CommentThread[]>();
+  for (const t of threads) {
+    if (t.resolved) continue;
+    const key = t.shapeId ?? t.id;
+    const group = groups.get(key);
+    if (group) group.push(t);
+    else groups.set(key, [t]);
+  }
+  return groups;
 }
 
 // Line/arrow/pen shapes store `points` as offsets relative to shape.x/y
@@ -497,6 +544,10 @@ export interface CanvasHandle {
   /** A PNG data URL, or null if there's nothing in the requested scope. */
   exportPNG: (options: ExportPngOptions) => string | null;
   insertImageFiles: (files: File[]) => void;
+  /** Centers the viewport on a thread's current anchor (resolved live for a
+   *  shape-pinned thread) without changing zoom — how the comments panel
+   *  navigates to a thread. No-ops if the thread id isn't known here. */
+  panToThread: (threadId: string) => void;
   undo: () => void;
   redo: () => void;
 }
@@ -510,6 +561,12 @@ interface CanvasProps {
   onSelectionChange: (count: number) => void;
   me: Me;
   stickyColor: string;
+  threads: CommentThread[];
+  members: BoardMember[];
+  onCreateThread: (anchor: CommentAnchor, body: string, mentionedUserIds: string[]) => void;
+  onDetachThreadAnchor: (threadId: string, x: number, y: number) => void;
+  onReplyToThread: (threadId: string, body: string, mentionedUserIds: string[]) => void;
+  onResolveThread: (threadId: string, resolved: boolean) => void;
 }
 
 /** An image being uploaded. Deliberately local state, never in the Yjs doc:
@@ -527,7 +584,22 @@ interface PendingUpload {
 }
 
 const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
-  { boardId, role, tool, onEscape, onHistoryChange, onSelectionChange, me, stickyColor },
+  {
+    boardId,
+    role,
+    tool,
+    onEscape,
+    onHistoryChange,
+    onSelectionChange,
+    me,
+    stickyColor,
+    threads,
+    members,
+    onCreateThread,
+    onDetachThreadAnchor,
+    onReplyToThread,
+    onResolveThread,
+  },
   ref
 ) {
   const canEdit = role !== "viewer";
@@ -541,6 +613,12 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   // React re-render (e.g. the throttled cursor-broadcast one) to catch up
   // mid-drag. See the comment on rerouteConnectors for why that mattered.
   const connectorHandleRefs = useRef(new Map<string, Konva.Circle>());
+  // Keyed by pin group (a shape id for shape-anchored threads, sharing one
+  // pin per groupThreadsForPins; a lone thread's own id for a point-anchored
+  // one) — same reasoning and the same choke point (rerouteConnectors) as
+  // connectorHandleRefs above, so a shape-pinned comment tracks a drag live
+  // instead of only catching up on the next poll.
+  const commentPinRefs = useRef(new Map<string, Konva.Node>());
   // Wrapped in one group purely so an export can hide every remote cursor at
   // once — B8 forbids baking presence chrome into the output.
   const cursorsGroupRef = useRef<Konva.Group>(null);
@@ -581,6 +659,20 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   // the last place the pointer was over the canvas is the best guess at
   // "here"; falls back to the middle of the viewport.
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
+  // A new comment's anchor, chosen but not yet submitted — the composer
+  // overlay shows while this is set; nothing reaches other sessions until
+  // the composer's Send button actually calls onCreateThread.
+  const [draftCommentAnchor, setDraftCommentAnchor] = useState<CommentAnchor | null>(null);
+  // Which thread's conversation is showing in the small popover a pin click
+  // opens — deliberately just that one thread, not the header's full list
+  // (that's a separate "browse everything" surface for a different job).
+  const [openThreadId, setOpenThreadId] = useState<string | null>(null);
+  // A shape can carry more than one thread sharing a single pin (see
+  // groupThreadsForPins) — clicking that pin shows this "which thread"
+  // list instead of jumping straight to a conversation. A point-anchored
+  // pin always has exactly one thread, so it skips this and opens openThreadId
+  // directly.
+  const [openPinGroupKey, setOpenPinGroupKey] = useState<string | null>(null);
 
   // The one place the stage gets rasterized — thumbnails and PNG export both
   // come through here, so the two things that must never end up in an image
@@ -641,15 +733,40 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     insertImageFiles: (files: File[]) => {
       void insertImageFiles(files);
     },
+    panToThread: (threadId: string) => {
+      const stage = stageRef.current;
+      const thread = threads.find((t) => t.id === threadId);
+      if (!stage || !thread) return;
+      const pos = resolveCommentAnchor(thread, shapes, shapeRefs.current);
+      if (!pos) return;
+      const currentScale = stage.scaleX();
+      stage.position({ x: size.width / 2 - pos.x * currentScale, y: size.height / 2 - pos.y * currentScale });
+      stage.batchDraw();
+    },
     undo,
     redo,
   }));
 
+  // Konva's Stage only resizes its backing <canvas> here — it never moves
+  // its own pan offset, so without this the content stays pinned to the old
+  // top-left origin while the container (and the chrome around it) visibly
+  // resizes, making shapes look "stuck" as the window changes size. Shifting
+  // by half the size delta keeps whatever was centered still centered.
+  const prevCanvasSizeRef = useRef({ width: 0, height: 0 });
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const observer = new ResizeObserver(([entry]) => {
       const { width, height } = entry.contentRect;
+      const prev = prevCanvasSizeRef.current;
+      const stage = stageRef.current;
+      if (stage && prev.width > 0 && prev.height > 0) {
+        stage.position({
+          x: stage.x() + (width - prev.width) / 2,
+          y: stage.y() + (height - prev.height) / 2,
+        });
+      }
+      prevCanvasSizeRef.current = { width, height };
       setSize({ width, height });
     });
     observer.observe(el);
@@ -745,9 +862,11 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   // Deletes shapes the same as removeShape/removeShapes, but first detaches
   // any connector bound to one of them — writing its last resolved position
   // into x/points so it stays right where it was instead of collapsing to
-  // the origin or vanishing. Route any *user-initiated* deletion through
-  // this instead of the raw primitives (brand-new degenerate shapes cleaned
-  // up mid-draw don't need it — nothing could be bound to them yet).
+  // the origin or vanishing — and any comment thread pinned to one of them,
+  // the same "keep it, mark it orphaned" treatment via onDetachThreadAnchor.
+  // Route any *user-initiated* deletion through this instead of the raw
+  // primitives (brand-new degenerate shapes cleaned up mid-draw don't need
+  // it — nothing could be bound to them yet).
   const deleteShapesAndDetachConnectors = useCallback(
     (ids: string[]) => {
       const idSet = new Set(ids);
@@ -768,10 +887,15 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         });
       }
       if (detachUpdates.length > 0) upsertShapes(detachUpdates);
+      for (const t of threads) {
+        if (!t.shapeId || !idSet.has(t.shapeId)) continue;
+        const pos = resolveCommentAnchor(t, shapes, shapeRefs.current);
+        if (pos) onDetachThreadAnchor(t.id, pos.x, pos.y);
+      }
       if (ids.length === 1) removeShape(ids[0]);
       else removeShapes(ids);
     },
-    [shapes, upsertShapes, removeShape, removeShapes],
+    [shapes, upsertShapes, removeShape, removeShapes, threads, onDetachThreadAnchor],
   );
 
   useEffect(() => {
@@ -790,6 +914,12 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
         } else if (key === "y") {
           e.preventDefault();
           redo();
+        } else if (key === "m" && e.shiftKey && selectedIds.size === 1) {
+          // Pin a comment to the selected shape — the composer that opens
+          // is the same one the comment tool's canvas-point path uses.
+          e.preventDefault();
+          const [id] = selectedIds;
+          setDraftCommentAnchor({ shapeId: id });
         }
         return;
       }
@@ -1064,7 +1194,10 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
   // during a drag (Konva mutates node positions directly, bypassing React
   // state) — without this they'd sit frozen at the pre-drag position and
   // only snap to the right spot once the drag commits and something else
-  // happens to force a re-render.
+  // happens to force a re-render. Also repositions any comment pin bound to
+  // this shape, same reasoning — a shape-pinned comment has no persisted
+  // position of its own, it's derived live exactly like a bound connector
+  // endpoint, so this is the one place both need to happen.
   function rerouteConnectors(shapeId: string) {
     let changed = false;
     for (const s of shapes) {
@@ -1076,6 +1209,11 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
       node.points([x1, y1, x2, y2]);
       connectorHandleRefs.current.get(`${s.id}:start`)?.position({ x: x1, y: y1 });
       connectorHandleRefs.current.get(`${s.id}:end`)?.position({ x: x2, y: y2 });
+      changed = true;
+    }
+    if (threads.some((t) => t.shapeId === shapeId && !t.resolved)) {
+      const pos = resolveAnchorPoint({ shapeId }, shapes, shapeRefs.current);
+      if (pos) commentPinRefs.current.get(shapeId)?.position(pos);
       changed = true;
     }
     if (changed) stageRef.current?.batchDraw();
@@ -1386,6 +1524,13 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     const stage = stageRef.current;
     if (!stage) return;
 
+    // A click anywhere else on the stage dismisses an open thread popover —
+    // including a click on the pin that opened it, which toggles it closed
+    // via its own onClick before this ever runs (Konva fires the more
+    // specific handler first), so this only ever catches "somewhere else."
+    setOpenThreadId(null);
+    setOpenPinGroupKey(null);
+
     if (e.evt.button === 1) {
       setMiddleMouseDown(true);
       return;
@@ -1421,6 +1566,15 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
     // click on the canvas, on the *same* still-armed tool. Without this guard
     // that click would also start placing a brand new shape right there.
     if (editingId || editingCell) return;
+
+    // Comments pin to a canvas point, not a shape's own creation flow — click
+    // anywhere, including on top of a shape, unlike every drawing tool below
+    // which is gated on clickedOnEmpty further down.
+    if (tool === "comment") {
+      const point = toStagePoint(stage);
+      setDraftCommentAnchor({ x: point.x, y: point.y });
+      return;
+    }
 
     // Starting a connector on a shape's revealed connection point binds that
     // end — the only case where drawing is allowed to begin on top of a
@@ -2395,6 +2549,47 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
             />
           )}
 
+          {Array.from(groupThreadsForPins(threads).entries()).map(([key, group]) => {
+            const pos = resolveCommentAnchor(group[0], shapes, shapeRefs.current);
+            if (!pos) return null;
+            const badge = group.length > 1 ? group.length : group[0].messages.length;
+            function handlePinClick() {
+              if (group.length > 1) {
+                setOpenThreadId(null);
+                setOpenPinGroupKey((k) => (k === key ? null : key));
+              } else {
+                setOpenPinGroupKey(null);
+                setOpenThreadId((id) => (id === group[0].id ? null : group[0].id));
+              }
+            }
+            return (
+              <Group
+                key={key}
+                ref={(node: Konva.Node | null) => {
+                  if (node) commentPinRefs.current.set(key, node);
+                  else commentPinRefs.current.delete(key);
+                }}
+                x={pos.x}
+                y={pos.y}
+                onClick={handlePinClick}
+                onTap={handlePinClick}
+              >
+                <Circle radius={9} fill="oklch(68% 0.18 55)" stroke="#ffffff" strokeWidth={2} />
+                <Text
+                  text={String(badge)}
+                  x={-9}
+                  y={-6}
+                  width={18}
+                  align="center"
+                  fontSize={11}
+                  fontFamily={TEXT_FONT_FAMILY}
+                  fill="#ffffff"
+                  listening={false}
+                />
+              </Group>
+            );
+          })}
+
           <Group ref={cursorsGroupRef} listening={false}>
           {Array.from(remoteCursors.entries()).map(([clientId, cursor]) => (
             <Group key={clientId} x={cursor.x} y={cursor.y} scaleX={1 / scale} scaleY={1 / scale} listening={false}>
@@ -2418,6 +2613,126 @@ const Canvas = forwardRef<CanvasHandle, CanvasProps>(function Canvas(
           </Group>
         </Layer>
       </Stage>
+
+      {draftCommentAnchor &&
+        (() => {
+          const stage = stageRef.current;
+          if (!stage) return null;
+          const worldPoint = resolveAnchorPoint(draftCommentAnchor, shapes, shapeRefs.current);
+          if (!worldPoint) return null;
+          const pos = toScreenPoint(stage, worldPoint);
+          return (
+            <div className="comment-composer-overlay" style={{ left: pos.x, top: pos.y }}>
+              <CommentComposer
+                members={members}
+                placeholder="Add a comment…"
+                autoFocus
+                onCancel={() => setDraftCommentAnchor(null)}
+                onSubmit={(body, mentionedUserIds) => {
+                  onCreateThread(draftCommentAnchor, body, mentionedUserIds);
+                  setDraftCommentAnchor(null);
+                }}
+              />
+            </div>
+          );
+        })()}
+
+      {openPinGroupKey &&
+        (() => {
+          const stage = stageRef.current;
+          const group = groupThreadsForPins(threads).get(openPinGroupKey);
+          if (!stage || !group || group.length === 0) return null;
+          const worldPoint = resolveCommentAnchor(group[0], shapes, shapeRefs.current);
+          if (!worldPoint) return null;
+          const pos = toScreenPoint(stage, worldPoint);
+          return (
+            <div className="comment-pin-group-popover" style={{ left: pos.x, top: pos.y }}>
+              {group.map((t) => {
+                const first = t.messages[0];
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className="comment-pin-group-row"
+                    onClick={() => {
+                      setOpenPinGroupKey(null);
+                      setOpenThreadId(t.id);
+                    }}
+                  >
+                    <span className="comment-pin-group-row-author">{first?.authorName ?? "Comment"}</span>
+                    <span className="comment-pin-group-row-body">{first?.body ?? ""}</span>
+                    <span className="comment-pin-group-row-count">
+                      {t.messages.length} {t.messages.length === 1 ? "message" : "messages"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })()}
+
+      {openThreadId &&
+        (() => {
+          const stage = stageRef.current;
+          const thread = threads.find((t) => t.id === openThreadId);
+          if (!stage || !thread) return null;
+          const worldPoint = resolveCommentAnchor(thread, shapes, shapeRefs.current);
+          if (!worldPoint) return null;
+          const pos = toScreenPoint(stage, worldPoint);
+          // A thread reached via the group list gets a way back to it; a
+          // point-anchored thread (or the sole thread on its shape) has no
+          // list to go back to, so it skips straight to Close.
+          const groupKey = thread.shapeId ?? thread.id;
+          const groupSize = groupThreadsForPins(threads).get(groupKey)?.length ?? 1;
+          return (
+            <div className="comment-thread-popover" style={{ left: pos.x, top: pos.y }}>
+              <div className="comment-thread-popover-messages">
+                {thread.messages.map((m) => (
+                  <div key={m.id} className="comment-thread-popover-message">
+                    <span className="comment-thread-popover-author">{m.authorName}</span>
+                    <span className="comment-thread-popover-body">{m.body}</span>
+                  </div>
+                ))}
+              </div>
+              {canEdit && (
+                <>
+                  <CommentComposer
+                    members={members}
+                    placeholder="Reply…"
+                    onSubmit={(body, mentionedUserIds) => onReplyToThread(thread.id, body, mentionedUserIds)}
+                  />
+                  <div className="comment-thread-popover-actions">
+                    {groupSize > 1 && (
+                      <button
+                        type="button"
+                        className="comment-composer-cancel"
+                        onClick={() => {
+                          setOpenThreadId(null);
+                          setOpenPinGroupKey(groupKey);
+                        }}
+                      >
+                        Back
+                      </button>
+                    )}
+                    <button type="button" className="comment-composer-cancel" onClick={() => setOpenThreadId(null)}>
+                      Close
+                    </button>
+                    <button
+                      type="button"
+                      className="board-header-comment-resolve"
+                      onClick={() => {
+                        onResolveThread(thread.id, true);
+                        setOpenThreadId(null);
+                      }}
+                    >
+                      Resolve
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          );
+        })()}
 
       {editingId &&
         (() => {

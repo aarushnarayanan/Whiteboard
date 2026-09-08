@@ -8,6 +8,9 @@ export interface BoardSummary {
   role: BoardRole;
   starred: boolean;
   tagId: string | null;
+  // Only populated by the board-list endpoint (a brand-new or just-duplicated
+  // board has no comments yet, so those responses simply omit it).
+  unresolvedCommentCount?: number;
 }
 
 async function parseJsonOrThrow(res: Response): Promise<unknown> {

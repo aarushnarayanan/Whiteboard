@@ -251,6 +251,11 @@ export default function BoardCard({
             {board.title}
           </button>
           <span className="board-card-list-meta">{editedLabel}</span>
+          {!!board.unresolvedCommentCount && (
+            <span className="board-card-comment-badge" title={`${board.unresolvedCommentCount} unresolved comment${board.unresolvedCommentCount === 1 ? "" : "s"}`}>
+              {board.unresolvedCommentCount}
+            </span>
+          )}
           {board.role !== "owner" && (
             <span className="board-card-role-pill board-card-role-pill-inline">{board.role}</span>
           )}
@@ -267,6 +272,11 @@ export default function BoardCard({
             </button>
 
             {board.role !== "owner" && <span className="board-card-role-pill">{board.role}</span>}
+            {!!board.unresolvedCommentCount && (
+              <span className="board-card-comment-badge" title={`${board.unresolvedCommentCount} unresolved comment${board.unresolvedCommentCount === 1 ? "" : "s"}`}>
+                {board.unresolvedCommentCount}
+              </span>
+            )}
 
             <div className="board-card-thumb-actions">
               {starButton}

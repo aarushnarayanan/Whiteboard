@@ -646,4 +646,112 @@ describe("boards routes", () => {
     expect((await upload(ownerCookie, shapeId, "application/pdf")).status).toBe(400);
     expect((await upload(ownerCookie, shapeId, "image/png", new Uint8Array(0))).status).toBe(400);
   });
+
+  it("gates comments by membership and role, enforces one anchor, and threads replies", async () => {
+    const ownerCookie = await signupAndGetCookie("boards-test-comments-owner@example.com");
+    const viewerCookie = await signupAndGetCookie("boards-test-comments-viewer@example.com");
+    const outsiderCookie = await signupAndGetCookie("boards-test-comments-outsider@example.com");
+
+    const createRes = await fetch(`${baseUrl}/boards`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ title: "Comments board" }),
+    });
+    const board = await createRes.json();
+
+    await fetch(`${baseUrl}/boards/${board.id}/members`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ email: "boards-test-comments-viewer@example.com", role: "viewer" }),
+    });
+
+    const post = (cookie: string, body: unknown) =>
+      fetch(`${baseUrl}/boards/${board.id}/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(body),
+      });
+
+    // A non-member can neither read nor post.
+    const outsiderReadRes = await fetch(`${baseUrl}/boards/${board.id}/comments`, {
+      headers: { cookie: outsiderCookie },
+    });
+    expect(outsiderReadRes.status).toBe(404);
+    expect((await post(outsiderCookie, { x: 10, y: 10, body: "hi" })).status).toBe(404);
+
+    // A viewer reads the board, so a viewer reads its comments — but can't post.
+    const viewerReadRes = await fetch(`${baseUrl}/boards/${board.id}/comments`, {
+      headers: { cookie: viewerCookie },
+    });
+    expect(viewerReadRes.status).toBe(200);
+    expect(await viewerReadRes.json()).toEqual([]);
+    expect((await post(viewerCookie, { x: 10, y: 10, body: "hi" })).status).toBe(403);
+
+    // Exactly one of {x, y} or {shapeId} is required — neither or both is a 400.
+    expect((await post(ownerCookie, { body: "no anchor" })).status).toBe(400);
+    expect((await post(ownerCookie, { x: 1, y: 1, shapeId: "s1", body: "both anchors" })).status).toBe(400);
+    expect((await post(ownerCookie, { x: 1, y: 1, body: "" })).status).toBe(400);
+
+    const threadRes = await post(ownerCookie, { x: 120, y: 80, body: "what does this connect to?" });
+    expect(threadRes.status).toBe(201);
+    const thread = await threadRes.json();
+    expect(thread.resolved).toBe(false);
+    expect(thread.messages).toHaveLength(1);
+    expect(thread.messages[0].body).toBe("what does this connect to?");
+
+    // A viewer still can't reply.
+    const viewerReplyRes = await fetch(`${baseUrl}/boards/${board.id}/comments/${thread.id}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: viewerCookie },
+      body: JSON.stringify({ body: "not allowed" }),
+    });
+    expect(viewerReplyRes.status).toBe(403);
+
+    const replyRes = await fetch(`${baseUrl}/boards/${board.id}/comments/${thread.id}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ body: "the auth service", mentionedUserIds: [] }),
+    });
+    expect(replyRes.status).toBe(201);
+
+    const listAfterReplyRes = await fetch(`${baseUrl}/boards/${board.id}/comments`, {
+      headers: { cookie: ownerCookie },
+    });
+    const listedThread = (await listAfterReplyRes.json())[0];
+    expect(listedThread.messages).toHaveLength(2);
+
+    // Resolving is reflected both on the thread and in the dashboard's
+    // per-board unresolved count.
+    const boardsBeforeResolve = await fetch(`${baseUrl}/boards`, { headers: { cookie: ownerCookie } });
+    const beforeSummary = (await boardsBeforeResolve.json()).find((b: { id: string }) => b.id === board.id);
+    expect(beforeSummary.unresolvedCommentCount).toBe(1);
+
+    const resolveRes = await fetch(`${baseUrl}/boards/${board.id}/comments/${thread.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ resolved: true }),
+    });
+    expect(resolveRes.status).toBe(200);
+
+    const boardsAfterResolve = await fetch(`${baseUrl}/boards`, { headers: { cookie: ownerCookie } });
+    const afterSummary = (await boardsAfterResolve.json()).find((b: { id: string }) => b.id === board.id);
+    expect(afterSummary.unresolvedCommentCount).toBe(0);
+
+    // Detaching a shape-anchored thread to a fixed point (what happens when
+    // the shape it was pinned to gets deleted) clears shapeId.
+    const shapeThreadRes = await post(ownerCookie, { shapeId: "some-shape-id", body: "on the shape" });
+    const shapeThread = await shapeThreadRes.json();
+    expect(shapeThread.shapeId).toBe("some-shape-id");
+    const detachRes = await fetch(`${baseUrl}/boards/${board.id}/comments/${shapeThread.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie: ownerCookie },
+      body: JSON.stringify({ x: 50, y: 60 }),
+    });
+    expect(detachRes.status).toBe(200);
+    const listAfterDetachRes = await fetch(`${baseUrl}/boards/${board.id}/comments`, { headers: { cookie: ownerCookie } });
+    const detached = (await listAfterDetachRes.json()).find((t: { id: string }) => t.id === shapeThread.id);
+    expect(detached.shapeId).toBeNull();
+    expect(detached.x).toBe(50);
+    expect(detached.y).toBe(60);
+  });
 });

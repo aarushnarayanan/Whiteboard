@@ -1,8 +1,8 @@
 import express, { Router } from "express";
-import { and, eq, isNotNull, isNull, lt } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import { asyncHandler } from "../asyncHandler.js";
 import { db } from "../db/index.js";
-import { boardMembers, boards, boardSnapshots, tags, users } from "../db/schema.js";
+import { boardMembers, boards, boardSnapshots, commentMessages, commentThreads, tags, users } from "../db/schema.js";
 import { requireAuth } from "../auth/middleware.js";
 import { loadMergedSnapshot } from "../ws/docStore.js";
 import { copyBoardImages, deleteBoardImages, getImage, putImage } from "../r2.js";
@@ -99,6 +99,13 @@ boardsRouter.get(
         role: boardMembers.role,
         starred: boardMembers.starred,
         tagId: boardMembers.tagId,
+        // Correlated scalar subquery rather than a join + group by — a real
+        // join here would multiply each board row per open thread, which
+        // every other column on this row-per-board query isn't shaped for.
+        unresolvedCommentCount: sql<number>`(
+          select count(*)::int from ${commentThreads}
+          where ${commentThreads.boardId} = ${boards.id} and ${commentThreads.resolved} = false
+        )`,
       })
       .from(boardMembers)
       .innerJoin(boards, eq(boardMembers.boardId, boards.id))
@@ -300,6 +307,234 @@ boardsRouter.get(
     // ponytail: 5 minutes of staleness; ETag revalidation if that's ever too long.
     res.set("Cache-Control", "private, max-age=300");
     image.body.pipe(res);
+  }),
+);
+
+boardsRouter.get(
+  "/:id/comments",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership) {
+      res.status(404).json({ error: "board not found" });
+      return;
+    }
+
+    const threads = await db
+      .select({
+        id: commentThreads.id,
+        authorId: commentThreads.authorId,
+        authorName: users.name,
+        x: commentThreads.x,
+        y: commentThreads.y,
+        shapeId: commentThreads.shapeId,
+        resolved: commentThreads.resolved,
+        createdAt: commentThreads.createdAt,
+      })
+      .from(commentThreads)
+      .innerJoin(users, eq(commentThreads.authorId, users.id))
+      .where(eq(commentThreads.boardId, boardId))
+      .orderBy(asc(commentThreads.createdAt));
+
+    if (threads.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    const messages = await db
+      .select({
+        id: commentMessages.id,
+        threadId: commentMessages.threadId,
+        authorId: commentMessages.authorId,
+        authorName: users.name,
+        body: commentMessages.body,
+        mentionedUserIds: commentMessages.mentionedUserIds,
+        createdAt: commentMessages.createdAt,
+      })
+      .from(commentMessages)
+      .innerJoin(users, eq(commentMessages.authorId, users.id))
+      .where(
+        inArray(
+          commentMessages.threadId,
+          threads.map((t) => t.id),
+        ),
+      )
+      .orderBy(asc(commentMessages.createdAt));
+
+    const messagesByThread = new Map<string, typeof messages>();
+    for (const message of messages) {
+      const list = messagesByThread.get(message.threadId) ?? [];
+      list.push(message);
+      messagesByThread.set(message.threadId, list);
+    }
+
+    res.json(threads.map((thread) => ({ ...thread, messages: messagesByThread.get(thread.id) ?? [] })));
+  }),
+);
+
+boardsRouter.post(
+  "/:id/comments",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+    const { x, y, shapeId, body, mentionedUserIds } = req.body ?? {};
+
+    const hasPoint = typeof x === "number" && typeof y === "number";
+    const hasShape = typeof shapeId === "string" && shapeId.length > 0;
+    if (hasPoint === hasShape) {
+      res.status(400).json({ error: "provide exactly one of {x, y} or {shapeId}" });
+      return;
+    }
+    if (typeof body !== "string" || body.trim() === "") {
+      res.status(400).json({ error: "a comment needs a message" });
+      return;
+    }
+    const mentions: string[] = Array.isArray(mentionedUserIds)
+      ? mentionedUserIds.filter((id): id is string => typeof id === "string")
+      : [];
+
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership) {
+      res.status(404).json({ error: "board not found" });
+      return;
+    }
+    if (membership.role === "viewer") {
+      res.status(403).json({ error: "you don't have permission to comment on this board" });
+      return;
+    }
+
+    const { thread, message } = await db.transaction(async (tx) => {
+      const [thread] = await tx
+        .insert(commentThreads)
+        .values({
+          boardId,
+          authorId: req.userId!,
+          x: hasPoint ? x : null,
+          y: hasPoint ? y : null,
+          shapeId: hasShape ? shapeId : null,
+        })
+        .returning();
+      const [message] = await tx
+        .insert(commentMessages)
+        .values({ threadId: thread.id, authorId: req.userId!, body: body.trim(), mentionedUserIds: mentions })
+        .returning();
+      return { thread, message };
+    });
+
+    const [author] = await db.select({ name: users.name }).from(users).where(eq(users.id, req.userId!));
+
+    res.status(201).json({
+      id: thread.id,
+      authorId: thread.authorId,
+      authorName: author?.name ?? "",
+      x: thread.x,
+      y: thread.y,
+      shapeId: thread.shapeId,
+      resolved: thread.resolved,
+      createdAt: thread.createdAt,
+      messages: [{ ...message, authorName: author?.name ?? "" }],
+    });
+  }),
+);
+
+boardsRouter.post(
+  "/:id/comments/:threadId/messages",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+    const threadId = req.params.threadId;
+    const { body, mentionedUserIds } = req.body ?? {};
+
+    if (typeof body !== "string" || body.trim() === "") {
+      res.status(400).json({ error: "a reply needs a message" });
+      return;
+    }
+    const mentions: string[] = Array.isArray(mentionedUserIds)
+      ? mentionedUserIds.filter((id): id is string => typeof id === "string")
+      : [];
+
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership) {
+      res.status(404).json({ error: "board not found" });
+      return;
+    }
+    if (membership.role === "viewer") {
+      res.status(403).json({ error: "you don't have permission to comment on this board" });
+      return;
+    }
+
+    const [thread] = await db
+      .select()
+      .from(commentThreads)
+      .where(and(eq(commentThreads.id, threadId), eq(commentThreads.boardId, boardId)));
+    if (!thread) {
+      res.status(404).json({ error: "comment thread not found" });
+      return;
+    }
+
+    const [message] = await db
+      .insert(commentMessages)
+      .values({ threadId, authorId: req.userId!, body: body.trim(), mentionedUserIds: mentions })
+      .returning();
+    const [author] = await db.select({ name: users.name }).from(users).where(eq(users.id, req.userId!));
+
+    res.status(201).json({ ...message, authorName: author?.name ?? "" });
+  }),
+);
+
+boardsRouter.patch(
+  "/:id/comments/:threadId",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+    const threadId = req.params.threadId;
+    const { resolved, x, y } = req.body ?? {};
+
+    const updates: Partial<{ resolved: boolean; x: number | null; y: number | null; shapeId: string | null }> = {};
+    if (typeof resolved === "boolean") updates.resolved = resolved;
+    if (typeof x === "number" && typeof y === "number") {
+      updates.x = x;
+      updates.y = y;
+      // Detaching to a fixed point — the shape this thread was pinned to is
+      // about to be deleted (see Canvas.tsx's deleteShapesAndDetachConnectors).
+      updates.shapeId = null;
+    }
+    if (Object.keys(updates).length === 0) {
+      res.status(400).json({ error: "nothing to update" });
+      return;
+    }
+
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership) {
+      res.status(404).json({ error: "board not found" });
+      return;
+    }
+    if (membership.role === "viewer") {
+      res.status(403).json({ error: "you don't have permission to update this board's comments" });
+      return;
+    }
+
+    const [thread] = await db
+      .select()
+      .from(commentThreads)
+      .where(and(eq(commentThreads.id, threadId), eq(commentThreads.boardId, boardId)));
+    if (!thread) {
+      res.status(404).json({ error: "comment thread not found" });
+      return;
+    }
+
+    await db.update(commentThreads).set(updates).where(eq(commentThreads.id, threadId));
+    res.status(200).json({ ok: true });
   }),
 );
 
