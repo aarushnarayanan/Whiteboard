@@ -10,6 +10,7 @@ export type BoardRole = "owner" | "editor" | "viewer";
 export interface StubAuthResult {
   boardId: string;
   role: BoardRole;
+  userId: string;
 }
 
 const BOARD_PATH = /^\/ws\/boards\/([^/]+)$/;
@@ -37,7 +38,7 @@ export async function authenticateWSRequest(req: IncomingMessage): Promise<StubA
       .innerJoin(boards, eq(boardMembers.boardId, boards.id))
       .where(and(eq(boardMembers.userId, userId), eq(boardMembers.boardId, boardId), isNull(boards.deletedAt)));
     if (!membership) return null;
-    return { boardId, role: membership.role };
+    return { boardId, role: membership.role, userId };
   } catch {
     // Malformed boardId (not a valid uuid) or a transient DB error both mean
     // "can't confirm access" — treat the same as no membership, not a crash.

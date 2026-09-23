@@ -1,10 +1,14 @@
 import express, { Router } from "express";
-import { and, asc, eq, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
+import * as Y from "yjs";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import { asyncHandler } from "../asyncHandler.js";
 import { db } from "../db/index.js";
-import { boardMembers, boards, boardSnapshots, commentMessages, commentThreads, tags, users } from "../db/schema.js";
+import { boardMembers, boards, boardSnapshots, boardVersions, commentMessages, commentThreads, tags, users } from "../db/schema.js";
 import { requireAuth } from "../auth/middleware.js";
-import { loadMergedSnapshot } from "../ws/docStore.js";
+import { acquireDoc, loadMergedSnapshot, persistUpdate, releaseDoc } from "../ws/docStore.js";
+import { broadcastUpdate } from "../ws/syncHandler.js";
+import { reconcileShapesMap } from "../versions/reconcile.js";
+import { saveVersion } from "../versions/store.js";
 import { copyBoardImages, deleteBoardImages, getImage, putImage } from "../r2.js";
 
 export const boardsRouter = Router();
@@ -80,6 +84,215 @@ boardsRouter.post(
       title: duplicate.title,
       thumbnail: duplicate.thumbnail ? `data:image/png;base64,${duplicate.thumbnail.toString("base64")}` : null,
       updatedAt: duplicate.updatedAt,
+      role: "owner" as const,
+      starred: false,
+      tagId: null,
+    });
+  }),
+);
+
+// F8 — version history. All five routes below share one membership check
+// (any member can list/preview/branch; editor+ can name a version or
+// restore), matching the inline-role-check convention already used
+// throughout this file rather than a shared middleware.
+
+boardsRouter.get(
+  "/:id/versions",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership) {
+      res.status(404).json({ error: "board not found" });
+      return;
+    }
+
+    const rows = await db
+      .select({ id: boardVersions.id, label: boardVersions.label, createdAt: boardVersions.createdAt, contributorIds: boardVersions.contributorIds })
+      .from(boardVersions)
+      .where(eq(boardVersions.boardId, boardId))
+      .orderBy(desc(boardVersions.createdAt));
+
+    const contributorIds = [...new Set(rows.flatMap((r) => r.contributorIds))];
+    const contributorRows = contributorIds.length
+      ? await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, contributorIds))
+      : [];
+    const namesById = new Map(contributorRows.map((u) => [u.id, u.name]));
+
+    res.json(
+      rows.map((r) => ({
+        id: r.id,
+        label: r.label,
+        createdAt: r.createdAt,
+        contributors: r.contributorIds.map((id) => ({ id, name: namesById.get(id) ?? "Unknown" })),
+      })),
+    );
+  }),
+);
+
+boardsRouter.get(
+  "/:id/versions/:versionId/preview",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership) {
+      res.status(404).json({ error: "board not found" });
+      return;
+    }
+
+    const [version] = await db
+      .select({ snapshot: boardVersions.snapshot })
+      .from(boardVersions)
+      .where(and(eq(boardVersions.id, req.params.versionId), eq(boardVersions.boardId, boardId)));
+    if (!version) {
+      res.status(404).json({ error: "version not found" });
+      return;
+    }
+
+    const doc = new Y.Doc();
+    Y.applyUpdate(doc, new Uint8Array(version.snapshot));
+    const shapes = Array.from(doc.getMap<Y.Map<unknown>>("shapes").values(), (m) => m.toJSON());
+    res.json({ shapes });
+  }),
+);
+
+boardsRouter.post(
+  "/:id/versions",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+    const { label } = req.body ?? {};
+    if (typeof label !== "string" || label.trim() === "") {
+      res.status(400).json({ error: "label is required" });
+      return;
+    }
+
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership) {
+      res.status(404).json({ error: "board not found" });
+      return;
+    }
+    if (membership.role === "viewer") {
+      res.status(403).json({ error: "you don't have permission to save a version of this board" });
+      return;
+    }
+
+    const mergedSnapshot = await loadMergedSnapshot(boardId);
+    const versionId = await saveVersion(boardId, mergedSnapshot ?? Buffer.from(Y.encodeStateAsUpdate(new Y.Doc())), label.trim());
+    res.status(201).json({ id: versionId });
+  }),
+);
+
+boardsRouter.post(
+  "/:id/versions/:versionId/restore",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership) {
+      res.status(404).json({ error: "board not found" });
+      return;
+    }
+    if (membership.role === "viewer") {
+      res.status(403).json({ error: "you don't have permission to restore this board" });
+      return;
+    }
+
+    const [version] = await db
+      .select({ snapshot: boardVersions.snapshot })
+      .from(boardVersions)
+      .where(and(eq(boardVersions.id, req.params.versionId), eq(boardVersions.boardId, boardId)));
+    if (!version) {
+      res.status(404).json({ error: "version not found" });
+      return;
+    }
+
+    const targetDoc = new Y.Doc();
+    Y.applyUpdate(targetDoc, new Uint8Array(version.snapshot));
+    const targetShapes: Record<string, Record<string, unknown>> = {};
+    targetDoc.getMap<Y.Map<unknown>>("shapes").forEach((value, key) => {
+      targetShapes[key] = value.toJSON() as Record<string, unknown>;
+    });
+
+    const doc = await acquireDoc(boardId);
+    try {
+      // Safety net first, from the state as it stands right now — this is
+      // what makes "restore is itself undoable" true.
+      const currentSnapshot = Buffer.from(Y.encodeStateAsUpdate(doc));
+      await saveVersion(boardId, currentSnapshot, null, { force: true });
+
+      const before = Y.encodeStateVector(doc);
+      reconcileShapesMap(doc, targetShapes);
+      const update = Y.encodeStateAsUpdate(doc, before);
+
+      await persistUpdate(boardId, update, req.userId!);
+      broadcastUpdate(boardId, update);
+    } finally {
+      releaseDoc(boardId);
+    }
+
+    res.status(200).json({ ok: true });
+  }),
+);
+
+boardsRouter.post(
+  "/:id/versions/:versionId/branch",
+  asyncHandler(async (req, res) => {
+    const boardId = req.params.id;
+    const [membership] = await db
+      .select()
+      .from(boardMembers)
+      .where(and(eq(boardMembers.userId, req.userId!), eq(boardMembers.boardId, boardId)));
+    if (!membership) {
+      res.status(404).json({ error: "board not found" });
+      return;
+    }
+
+    const [original] = await db.select().from(boards).where(eq(boards.id, boardId));
+    const [version] = await db
+      .select({ snapshot: boardVersions.snapshot })
+      .from(boardVersions)
+      .where(and(eq(boardVersions.id, req.params.versionId), eq(boardVersions.boardId, boardId)));
+    if (!original || !version) {
+      res.status(404).json({ error: "board or version not found" });
+      return;
+    }
+
+    const branch = await db.transaction(async (tx) => {
+      const [branch] = await tx
+        .insert(boards)
+        .values({ title: `${original.title} (restored copy)` })
+        .returning();
+      await tx.insert(boardMembers).values({ userId: req.userId!, boardId: branch.id, role: "owner" });
+      await tx.insert(boardSnapshots).values({ boardId: branch.id, snapshot: version.snapshot });
+      return branch;
+    });
+
+    // Same caveat as /duplicate: image keys are (boardId, shapeId)-derived,
+    // so this copies the *current* board's images, which may include ones
+    // added after this version and miss ones deleted before it. Logged and
+    // swallowed for the same reason — a branch missing an image beats one
+    // that didn't happen.
+    try {
+      await copyBoardImages(boardId, branch.id);
+    } catch (err) {
+      console.error("failed to copy board images on version branch", err);
+    }
+
+    res.status(201).json({
+      id: branch.id,
+      title: branch.title,
+      thumbnail: null,
+      updatedAt: branch.updatedAt,
       role: "owner" as const,
       starred: false,
       tagId: null,

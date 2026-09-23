@@ -37,7 +37,7 @@ export function createBoardServer(): Server {
       }
 
       wss.handleUpgrade(req, socket, head, (ws) => {
-        handleBoardConnection(ws, auth.boardId, auth.role).catch((err) => {
+        handleBoardConnection(ws, auth.boardId, auth.role, auth.userId).catch((err) => {
           console.error("failed to handle board connection", err);
           // No releaseDoc here: either acquireDoc itself rejected (it rolls its own
           // ref count back) or the doc was acquired and handleBoardConnection has

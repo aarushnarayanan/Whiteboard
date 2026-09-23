@@ -5,6 +5,7 @@ import * as decoding from "lib0/decoding";
 import * as syncProtocol from "y-protocols/sync";
 import { acquireDoc, releaseDoc, persistUpdate } from "./docStore.js";
 import { compactBoard } from "./compaction.js";
+import { saveVersion } from "../versions/store.js";
 import type { BoardRole } from "./roleStub.js";
 
 const MESSAGE_SYNC = 0;
@@ -20,10 +21,22 @@ function broadcast(boardId: string, exclude: WebSocket | null, data: Uint8Array)
   }
 }
 
+/** Pushes a Yjs update to connected clients — used both by the live sync
+ *  relay below (excluding the sender, who already has it) and by the
+ *  restore route (no sender to exclude), so a restore is reflected to
+ *  collaborators through the exact same mechanism as a normal edit. */
+export function broadcastUpdate(boardId: string, update: Uint8Array, exclude: WebSocket | null = null): void {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MESSAGE_SYNC);
+  syncProtocol.writeUpdate(encoder, update);
+  broadcast(boardId, exclude, encoding.toUint8Array(encoder));
+}
+
 export async function handleBoardConnection(
   ws: WebSocket,
   boardId: string,
   role: BoardRole,
+  userId: string,
 ): Promise<void> {
   // Must be registered before anything can fail: `ws` emits 'error' on the
   // WebSocket instance for protocol-level receiver failures (e.g. a frame with
@@ -60,6 +73,13 @@ export async function handleBoardConnection(
     releaseDoc(boardId);
     if (sockets!.size === 0) {
       boardSockets.delete(boardId);
+      // F8 — an auto-snapshot per session, taken from the doc instance still
+      // referenced here (cheapest possible source: no extra DB read needed).
+      // Encoded synchronously below, so it captures this doc's state right
+      // now regardless of what releaseDoc/compactBoard do afterward.
+      saveVersion(boardId, Buffer.from(Y.encodeStateAsUpdate(doc)), null).catch((err) =>
+        console.error("auto-snapshot failed", err),
+      );
       compactBoard(boardId).catch((err) => console.error("compaction failed", err));
     }
   });
@@ -110,12 +130,8 @@ export async function handleBoardConnection(
       }
 
       const update = Y.encodeStateAsUpdate(doc, before);
-      persistUpdate(boardId, update).catch((err) => console.error("failed to persist update", err));
-
-      const relayEncoder = encoding.createEncoder();
-      encoding.writeVarUint(relayEncoder, MESSAGE_SYNC);
-      syncProtocol.writeUpdate(relayEncoder, update);
-      broadcast(boardId, ws, encoding.toUint8Array(relayEncoder));
+      persistUpdate(boardId, update, userId).catch((err) => console.error("failed to persist update", err));
+      broadcastUpdate(boardId, update, ws);
     } catch (err) {
       // Defense in depth: a malformed payload must never take the process down.
       console.error("failed to handle message", err);

@@ -3,7 +3,7 @@ import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
 import type { ShapeObj } from "../canvas/types";
 
-export function useBoardDoc(boardId: string) {
+export function useBoardDoc(boardId: string, options?: { staticShapes?: ShapeObj[] }) {
   const docRef = useRef<Y.Doc | undefined>(undefined);
   if (!docRef.current) {
     docRef.current = new Y.Doc();
@@ -16,12 +16,33 @@ export function useBoardDoc(boardId: string) {
   // Exposed so callers can reach `.awareness` for cursor/presence — set
   // synchronously in this effect, read by effects declared after this hook
   // call returns (they run later in the same commit), so it's never stale
-  // by the time anything reads it.
+  // by the time anything reads it. Stays undefined in static mode (below) —
+  // Canvas's own awareness effect already no-ops when there's no provider.
   const providerRef = useRef<WebsocketProvider | undefined>(undefined);
+
+  const staticShapes = options?.staticShapes;
 
   useEffect(() => {
     const doc = docRef.current!;
     const shapesMap = doc.getMap<Y.Map<unknown>>("shapes");
+
+    // F8 preview mode: a version's content, frozen. No socket, no undo — the
+    // doc never changes again for the life of this hook instance (a preview
+    // Canvas is remounted with a fresh key rather than ever handed new
+    // staticShapes in place), so there's nothing for an observer or an undo
+    // manager to do.
+    if (staticShapes) {
+      doc.transact(() => {
+        for (const shape of staticShapes) {
+          const entry = new Y.Map();
+          for (const [key, value] of Object.entries(shape)) entry.set(key, value);
+          shapesMap.set(shape.id, entry);
+        }
+      });
+      const next = [...staticShapes].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      setShapes(next);
+      return;
+    }
 
     // No role/token is sent here — the server reads the session cookie itself
     // (browsers attach cookies to a same-origin WS handshake automatically)
@@ -36,6 +57,9 @@ export function useBoardDoc(boardId: string) {
     function syncShapes() {
       const next: ShapeObj[] = [];
       shapesMap.forEach((shape) => next.push(shape.toJSON() as ShapeObj));
+      // Stable sort so untouched shapes (order: undefined -> 0) keep their
+      // current relative position — only an explicit reorder moves anything.
+      next.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
       setShapes(next);
     }
 
@@ -65,7 +89,7 @@ export function useBoardDoc(boardId: string) {
       provider.destroy();
       providerRef.current = undefined;
     };
-  }, [boardId]);
+  }, [boardId, staticShapes]);
 
   function upsertShape(shape: ShapeObj) {
     const shapesMap = docRef.current!.getMap<Y.Map<unknown>>("shapes");

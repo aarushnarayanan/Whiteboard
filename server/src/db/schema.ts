@@ -72,6 +72,10 @@ export const boardUpdates = pgTable(
       .notNull()
       .references(() => boards.id, { onDelete: "cascade" }),
     update: bytea("update").notNull(),
+    // Nullable: the update-log rows this points at are themselves routinely
+    // deleted by compaction, so this is only ever used to compute a version's
+    // contributor list at snapshot time, not as a durable audit trail.
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index("board_updates_board_id_idx").on(table.boardId, table.id)],
@@ -84,6 +88,28 @@ export const boardSnapshots = pgTable("board_snapshots", {
   snapshot: bytea("snapshot").notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// F8 — version history. Deliberately a full Yjs-state snapshot per row, not
+// an operation log: board_updates is already routinely compacted away (see
+// compaction.ts), so a log-based history would have gaps every time a board
+// goes briefly idle. label is null for an automatic snapshot (session end,
+// or the safety-net taken right before a restore) and set for a user-named
+// version. contributorIds is computed once at snapshot time from
+// board_updates rows since the previous version, not recomputed on read.
+export const boardVersions = pgTable(
+  "board_versions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    boardId: uuid("board_id")
+      .notNull()
+      .references(() => boards.id, { onDelete: "cascade" }),
+    snapshot: bytea("snapshot").notNull(),
+    label: text("label"),
+    contributorIds: uuid("contributor_ids").array().notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("board_versions_board_id_idx").on(table.boardId, table.createdAt)],
+);
 
 // A comment pins to exactly one of a fixed canvas point (x, y) or a shape —
 // enforced in the route handler, not here. A shape lives inside the board's

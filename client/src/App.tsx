@@ -4,11 +4,19 @@ import LoginForm from "./auth/LoginForm";
 import Dashboard from "./dashboard/Dashboard";
 import BoardRoute from "./board/BoardRoute";
 import { logout, me as fetchMe, type Me } from "./api/auth";
+import type { ClipboardPayload } from "./canvas/types";
 import "./App.css";
 
 function App() {
   const [me, setMe] = useState<Me | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
+  // Lifted above BoardRoute (not inside it) because "/" (the dashboard) and
+  // "/b/:boardId" are sibling routes, not nested — going board -> dashboard
+  // -> a different board fully unmounts BoardRoute in between, which would
+  // lose a clipboard state living there. App itself never unmounts within
+  // the session (only a hard reload resets it), so this is the one place a
+  // copy actually survives a real board-to-board switch.
+  const [clipboard, setClipboard] = useState<ClipboardPayload | null>(null);
 
   useEffect(() => {
     fetchMe()
@@ -55,7 +63,7 @@ function App() {
       <Route path="/shared" element={dashboard} />
       <Route path="/trash" element={dashboard} />
       <Route path="/settings" element={dashboard} />
-      <Route path="/b/:boardId" element={<BoardRoute me={me} />} />
+      <Route path="/b/:boardId" element={<BoardRoute me={me} clipboard={clipboard} onCopy={setClipboard} />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

@@ -10,6 +10,8 @@ interface ToolbarProps {
   onRedo: () => void;
   stickyColor: string;
   onStickyColorChange: (color: string) => void;
+  penStyle: { stroke: string; strokeWidth: number };
+  onPenStyleChange: (patch: Partial<{ stroke: string; strokeWidth: number }>) => void;
   onPickImages: (files: File[]) => void;
 }
 
@@ -197,6 +199,19 @@ const STICKY_COLORS = [
   { label: "Green", value: "#dcf0d8" },
 ];
 
+const PEN_COLORS = [
+  { label: "Ink", value: "oklch(55% 0.18 250)" },
+  { label: "Black", value: "oklch(20% 0 0)" },
+  { label: "Red", value: "oklch(55% 0.2 25)" },
+  { label: "Green", value: "oklch(55% 0.15 145)" },
+];
+
+const PEN_WIDTHS = [
+  { label: "Thin", value: 1.5 },
+  { label: "Medium", value: 2.5 },
+  { label: "Thick", value: 4 },
+];
+
 export default function Toolbar({
   tool,
   onChange,
@@ -206,10 +221,13 @@ export default function Toolbar({
   onRedo,
   stickyColor,
   onStickyColorChange,
+  penStyle,
+  onPenStyleChange,
   onPickImages,
 }: ToolbarProps) {
   const [shapesOpen, setShapesOpen] = useState(false);
   const [stickyOpen, setStickyOpen] = useState(false);
+  const [penOpen, setPenOpen] = useState(false);
   const [lastShapeTool, setLastShapeTool] = useState<(typeof SHAPE_ITEMS)[number]["tool"]>("rect");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -226,6 +244,7 @@ export default function Toolbar({
       if (toolbarRef.current && !toolbarRef.current.contains(e.target as Node)) {
         setShapesOpen(false);
         setStickyOpen(false);
+        setPenOpen(false);
       }
     }
     document.addEventListener("mousedown", handleOutside);
@@ -237,6 +256,7 @@ export default function Toolbar({
     if (SHAPE_ITEMS.some((item) => item.tool === t)) setLastShapeTool(t as (typeof SHAPE_ITEMS)[number]["tool"]);
     setShapesOpen(false);
     setStickyOpen(false);
+    setPenOpen(false);
   }
 
   function selectSticky(color: string) {
@@ -252,6 +272,7 @@ export default function Toolbar({
   function openShapes() {
     onChange(lastShapeTool);
     setStickyOpen(false);
+    setPenOpen(false);
     setShapesOpen((s) => !s);
   }
 
@@ -260,7 +281,27 @@ export default function Toolbar({
   function openSticky() {
     onChange("sticky");
     setShapesOpen(false);
+    setPenOpen(false);
     setStickyOpen((s) => !s);
+  }
+
+  // Same pattern again: arms Pen with whatever color/width was last used,
+  // the flyout is an optional follow-up rather than a required first step.
+  function openPen() {
+    onChange("pen");
+    setShapesOpen(false);
+    setStickyOpen(false);
+    setPenOpen((s) => !s);
+  }
+
+  function selectPenColor(strokeColor: string) {
+    onPenStyleChange({ stroke: strokeColor });
+    onChange("pen");
+  }
+
+  function selectPenWidth(width: number) {
+    onPenStyleChange({ strokeWidth: width });
+    onChange("pen");
   }
 
   return (
@@ -274,15 +315,48 @@ export default function Toolbar({
       >
         <SelectIcon />
       </button>
-      <button
-        type="button"
-        className="toolbar-button"
-        aria-pressed={tool === "pen"}
-        title="Pen"
-        onClick={() => selectTool("pen")}
-      >
-        <PenIcon />
-      </button>
+      <div className="toolbar-flyout-wrap">
+        <button
+          type="button"
+          className="toolbar-button"
+          aria-pressed={tool === "pen"}
+          title="Pen"
+          onClick={openPen}
+        >
+          <PenIcon />
+        </button>
+        {penOpen && (
+          <div className="toolbar-flyout toolbar-pen-flyout">
+            <div className="toolbar-pen-swatches">
+              {PEN_COLORS.map((c) => (
+                <button
+                  key={c.value}
+                  type="button"
+                  className="toolbar-sticky-swatch"
+                  style={{ background: c.value }}
+                  title={c.label}
+                  aria-pressed={tool === "pen" && penStyle.stroke === c.value}
+                  onClick={() => selectPenColor(c.value)}
+                />
+              ))}
+            </div>
+            <div className="toolbar-pen-widths">
+              {PEN_WIDTHS.map((w) => (
+                <button
+                  key={w.value}
+                  type="button"
+                  className="toolbar-pen-width-btn"
+                  title={w.label}
+                  aria-pressed={tool === "pen" && penStyle.strokeWidth === w.value}
+                  onClick={() => selectPenWidth(w.value)}
+                >
+                  <span className="toolbar-pen-width-dot" style={{ width: w.value + 2, height: w.value + 2 }} />
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
       <button
         type="button"
         className="toolbar-button"

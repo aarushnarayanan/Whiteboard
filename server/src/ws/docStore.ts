@@ -108,6 +108,6 @@ export function releaseDoc(boardId: string): void {
   }
 }
 
-export async function persistUpdate(boardId: string, update: Uint8Array): Promise<void> {
-  await db.insert(boardUpdates).values({ boardId, update: Buffer.from(update) });
+export async function persistUpdate(boardId: string, update: Uint8Array, userId?: string): Promise<void> {
+  await db.insert(boardUpdates).values({ boardId, update: Buffer.from(update), userId });
 }

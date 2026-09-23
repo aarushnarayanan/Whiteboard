@@ -11,6 +11,50 @@
   min-height: 0;
 }
 
+.board-canvas-preview-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  background: var(--canvas-bg);
+}
+
+.board-canvas-preview-banner {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--ink-700);
+  color: #fff;
+  font-size: 13px;
+}
+.board-canvas-preview-banner-actions {
+  display: flex;
+  gap: 8px;
+}
+.board-canvas-preview-banner-actions button {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: transparent;
+  color: #fff;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.board-canvas-preview-banner-actions button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+/* .canvas-container normally has exactly one relative parent (.board-canvas-area)
+   and fills it via height:100% — inside this flex-column overlay it's a flex
+   item instead, so it needs an explicit flex-basis to fill the space below
+   the banner rather than collapsing to its content height. */
+.board-canvas-preview-overlay > .canvas-container {
+  flex: 1;
+  min-height: 0;
+}
+
 .canvas-container {
   width: 100%;
   height: 100%;
@@ -512,6 +556,113 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.board-header-versions-wrap {
+  position: relative;
+}
+
+.board-header-versions-panel {
+  position: absolute;
+  top: 30px;
+  right: 0;
+  width: 340px;
+  max-height: 460px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  padding: 14px;
+  z-index: 60;
+}
+
+.version-history-save-form {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.version-history-save-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+.version-history-save-form button {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: none;
+  background: var(--ink-700);
+  color: #fff;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.version-history-save-form button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.version-history-error {
+  font-size: 12px;
+  color: var(--danger);
+  margin: 0 0 8px;
+}
+
+.version-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.version-history-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 8px;
+}
+.version-history-row-active {
+  background: var(--surface-100);
+}
+
+.version-history-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.version-history-row-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.version-history-row-meta {
+  font-size: 11px;
+  color: var(--ink-500);
+}
+
+.version-history-row-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.version-history-row-actions button {
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: #fff;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.version-history-row-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .board-header-comment-thread {
@@ -1021,6 +1172,222 @@
 .toolbar-sticky-swatch[aria-pressed="true"] {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+.toolbar-pen-flyout {
+  flex-direction: column;
+}
+
+.toolbar-pen-swatches,
+.toolbar-pen-widths {
+  display: flex;
+  gap: 2px;
+}
+
+.toolbar-pen-width-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+}
+.toolbar-pen-width-btn:hover {
+  background: var(--surface-100);
+}
+.toolbar-pen-width-btn[aria-pressed="true"] {
+  background: var(--accent-subtle);
+}
+.toolbar-pen-width-dot {
+  border-radius: 50%;
+  background: var(--ink-700);
+}
+
+/* F8 — restore notice, shown to other collaborators when someone restores a version */
+
+.restore-notice {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--ink-700);
+  color: #fff;
+  font-size: 12.5px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  box-shadow: var(--shadow-lg);
+  z-index: 70;
+  pointer-events: none;
+}
+
+/* Context toolbar — appears above (or below) the current selection */
+
+.context-toolbar-anchor {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 10px));
+  z-index: 20;
+}
+.context-toolbar-anchor-flip {
+  transform: translate(-50%, 10px);
+}
+
+.context-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  white-space: nowrap;
+}
+
+.context-toolbar-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--border-subtle);
+  margin: 0 4px;
+}
+
+.context-toolbar-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-700);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.context-toolbar-button:hover:not(:disabled) {
+  background: var(--surface-100);
+}
+.context-toolbar-button[aria-pressed="true"] {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+.context-toolbar-button:disabled {
+  color: var(--border-medium);
+  cursor: default;
+}
+.context-toolbar-bold {
+  font-weight: 700;
+}
+.context-toolbar-italic {
+  font-style: italic;
+}
+.context-toolbar-danger:hover:not(:disabled) {
+  background: oklch(93% 0.06 25);
+  color: oklch(50% 0.19 25);
+}
+
+.context-toolbar-flyout-wrap {
+  position: relative;
+}
+
+.context-toolbar-flyout {
+  position: absolute;
+  top: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #fff;
+  border: 1px solid var(--border-subtle);
+  border-radius: 11px;
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 21;
+}
+.context-toolbar-anchor-flip .context-toolbar-flyout {
+  top: auto;
+  bottom: 40px;
+}
+
+.context-toolbar-flyout-row {
+  display: flex;
+  gap: 2px;
+}
+
+.context-toolbar-width-btn {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+}
+.context-toolbar-width-btn:hover {
+  background: var(--surface-100);
+}
+.context-toolbar-width-dot {
+  border-radius: 50%;
+  background: var(--ink-700);
+}
+
+/* Right-click menu — top-left anchored at the click point, unlike the
+   context toolbar's centered-above-selection positioning */
+
+.context-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 29;
+}
+
+.context-menu {
+  position: absolute;
+  width: 190px;
+  background: #fff;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  padding: 5px;
+  z-index: 30;
+}
+
+.context-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: none;
+  background: none;
+  font-size: 13px;
+  color: var(--ink-700);
+  cursor: pointer;
+}
+.context-menu-item:hover:not(:disabled) {
+  background: var(--surface-100);
+}
+.context-menu-item:disabled {
+  color: var(--border-medium);
+  cursor: default;
+}
+
+.context-menu-divider {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 4px 2px;
+}
+
+.context-menu-danger {
+  color: oklch(50% 0.19 25) !important;
+}
+.context-menu-danger:hover:not(:disabled) {
+  background: oklch(93% 0.06 25) !important;
 }
 
 /* Text tool edit overlay */

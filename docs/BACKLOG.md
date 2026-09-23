@@ -31,13 +31,13 @@ scope changes while building it, update its detail section, not just the checkbo
 ### Tier 2 — Friction (people work around these, and will resent every one)
 
 - [x] **F1** — Every tool resets to Select after one use
-- [ ] **F2** — Objects cannot be styled after creation (no floating context toolbar)
-- [ ] **F3** — No right-click menu; no duplicate
+- [x] **F2** — Objects cannot be styled after creation *(scope cut — see note below)*
+- [x] **F3** — No right-click menu; no duplicate *(scope cut — see note below)*
 - [ ] **F4** — No keyboard shortcuts for tools
 - [x] **F5** — Tab inside a table escapes to browser chrome, loses text *(scope cut — see note below)*
 - [ ] **F6** — Boards are effectively unfindable (naming/tagging/content search)
 - [ ] **F7** — Cannot tell who else is on the board (presence/follow/spotlight)
-- [ ] **F8** — No version history
+- [x] **F8** — No version history *(scope cut — see note below)*
 - [x] **F9** — Five live buttons do nothing, silently
 - [ ] **F10** — Canvas navigation/orientation (Fit to screen, minimap, zoom-to-selection)
 - [x] **F11** — Sticky/shape tools don't look armed (two-click cost, lying active-state)
@@ -59,6 +59,7 @@ scope changes while building it, update its detail section, not just the checkbo
 - [ ] **I2** — No database-level access control (Postgres RLS)
 - [ ] **I3** — Orphaned R2 image objects are never reclaimed
 - [ ] **I4** — R2 misconfiguration isn't caught until the first upload
+- [ ] **I5** — Viewport-culled rendering for very large boards *(deferred — build much later, only if needed)*
 
 ### Build order
 
@@ -67,7 +68,7 @@ scope changes while building it, update its detail section, not just the checkbo
 - [ ] **Block 3 — Multiplayer for real**: B7, F7, F8
 - [ ] **Block 4 — Chosen over the incumbents**: B9, F6, X1, X2, X3, X7
 - [ ] **Unscheduled — do opportunistically, not blocking anything above**: I1, I2, X8
-- [ ] **Later**: X4, X5, X6
+- [ ] **Later**: X4, X5, X6, I5
 
 ### Needs confirmation before work (observed, not conclusively verified)
 
@@ -587,6 +588,26 @@ there's a specific reason not to.
 
 ### F2 — Objects cannot be styled after creation
 
+**Severity:** FRICTION (high — arguably a blocker for retros) · **Status:** SHIPPED IN PART — see
+scope note below
+
+**Scope decision:** align & distribute (6 align modes + 2 distribute modes, for 2+ selected
+objects) is deliberately **not** part of this pass — everything else in the "Required behavior"
+list below shipped: fill color (shapes/stickies/frames), stroke color/width (shapes/connectors/
+pen), independent start/end arrowhead toggles on arrows, text size/bold/italic/alignment/color
+(applies everywhere text renders: standalone text, sticky bodies, shape labels, table cells, frame
+titles), layer order (front/back/forward/backward, via a new explicit `order` field rather than
+relying on Yjs Map iteration order, which isn't a defined ordering under concurrent edits),
+lock/unlock (a locked shape resists move/resize/delete and is skipped by marquee/Select All, but
+stays click-selectable so it can be unlocked again), duplicate (Cmd/Ctrl+D and a toolbar button,
+one shared implementation), and a Pen color/width picker in the main toolbar. "Remember last-used
+style per tool" — the existing sticky-color pattern — was generalized to shape/pen/connector/text
+tools too. Align/distribute is real, separate work — it needs its own layout-computation pass over
+2+ shapes' bounds, distinct from the per-field style patching everything else here is built on —
+and is deferred to a follow-up item rather than blocking this one.
+
+**Original issue below.**
+
 **Severity:** FRICTION (high — arguably a blocker for retros) · **Status:** VERIFIED
 
 **Current behavior:** Selecting an object shows resize handles and nothing else — no properties
@@ -624,6 +645,36 @@ Keep the palette small and curated — sixteen good colors beats a color wheel.
 ---
 
 ### F3 — No right-click menu; no duplicate
+
+**Severity:** FRICTION · **Status:** SHIPPED IN PART — see scope note below
+
+**Scope decision:** everything in the "Required behavior" list below shipped except Alt-drag
+duplicate for two specific drag paths. A real right-click context menu now appears on a shape
+(Cut/Copy/Paste/Duplicate, layer order, Lock/Unlock, Add comment, Copy link to object, Delete) and
+on empty canvas (Paste, Select all, Add sticky here, Add frame here, Zoom to fit), suppressing the
+native browser menu unconditionally. An in-app clipboard (deliberately not `navigator.clipboard` —
+a plain snapshot lifted to `App.tsx`, above the board route, so it survives switching boards
+through the dashboard within the same session) backs Cut/Copy/Paste, landing a paste near the
+cursor/right-click point and preserving relative layout for a multi-shape copy. Alt/Option-drag
+duplicates a shape while leaving the original exactly in place, as a single undo step — the
+trickiest part of this pass, since a live Konva drag gesture can't be rebound mid-gesture: the
+clone decision happens once, at drag commit, never touching the original shape's stored position at
+all, which is also why anything bound to the original (a connector, a comment pin) is unaffected
+without any special-case handling. "Copy link to object" is a real `?shapeId=` deep link
+(`navigator.clipboard.writeText`, text only) that pans the viewport to that shape on open, retrying
+briefly since the target shape's Yjs sync and the container's own first size measurement both
+routinely lose the race on a fresh page load.
+
+**Deliberately not built this pass:** Alt-drag duplicate is wired for the 8 per-shape-node drag
+paths, but not for dragging a multi-selection via a gap between shapes (the "selection backdrop"
+drag) or dragging a frame by its interior — both are separate drag-start/end pairs with their own
+group-membership bookkeeping; extending them is the same pattern, just roughly doubling the
+touched surface for a comparatively rare gesture. Cmd/Ctrl+C/V/X interop with the OS clipboard
+(pasting into another app, or between separate browser windows) is out of scope — the acceptance
+criterion only asked for "within a board and across boards in the same session," which the in-app
+clipboard already satisfies without the added complexity of a real OS-clipboard integration.
+
+**Original issue below.**
 
 **Severity:** FRICTION · **Status:** VERIFIED
 
@@ -682,14 +733,37 @@ Cmd/Ctrl+G            Group
 Cmd/Ctrl+Shift+G      Ungroup
 Cmd/Ctrl+C/V/X        Copy/paste/cut
 Cmd/Ctrl+ +/-         Zoom in/out
-Cmd/Ctrl+0            Zoom to 100%
-Cmd/Ctrl+1            Zoom to fit
-Cmd/Ctrl+2            Zoom to selection
+Shift+0               Zoom to 100%
+Shift+1               Zoom to fit
+Shift+2               Zoom to selection
+Cmd/Ctrl+]            Bring forward
+Cmd/Ctrl+[            Send backward
+Cmd/Ctrl+Shift+]      Bring to front
+Cmd/Ctrl+Shift+[      Send to back
+Cmd/Ctrl+Shift+L      Lock/unlock selection
+Shift (hold, dragging) Constrain — square/circle on draw, 15° snap on line/arrow, axis-lock on move
 Space (hold)          Temporary pan
 Arrow keys            Nudge selection 1px
 Shift+arrows          Nudge 10px
 ?                     Open shortcuts overlay
 ```
+
+**Cross-referenced against Figma, Miro, and Google Docs/Slides:** the single-letter tool keys and
+Alt-drag-to-duplicate (already shipped in F3) already match Figma/Miro convention. Two corrections
+and three additions came out of that comparison:
+- **Zoom rebound to Shift+0/1/2** (was Cmd/Ctrl+0/1/2) — Chrome and Firefox both reserve
+  Cmd/Ctrl+1 through +9 for tab-switching at the OS/browser-chrome level, so those bindings would
+  never have reached the page. Figma and Miro both avoid this collision the same way.
+- **Layer-order and lock shortcuts added** — F2 already built bring-to-front/back/forward/backward
+  and lock/unlock, but today they're reachable only through the right-click menu (F3). Figma/Miro
+  both bind these; this closes the gap rather than expanding scope.
+- **Shift-to-constrain added** — held while drawing or resizing, constrains to square/circle or
+  snaps line/arrow angles to 15°; held while moving, axis-locks the drag. Standard across Figma,
+  Miro, and Slides' shape tools; wasn't in the original spec at all.
+- Google Docs/Slides contributed little beyond that: they're document editors, and most of their
+  bindings (text formatting, indent) don't transfer to a canvas tool. Their object-arrange chord
+  (`Ctrl+Alt+Shift+...`) is the same idea as the layer-order shortcuts above, so Figma's simpler
+  `Cmd/Ctrl+]`/`[` form is used instead of duplicating it under a second chord.
 
 **Acceptance criteria:**
 - Every binding above works from the board canvas.
@@ -838,9 +912,9 @@ rather than sending every mousemove.
 
 ### F8 — No version history
 
-**Severity:** FRICTION (trust blocker for teams) · **Status:** VERIFIED — button present, labelled "Not built yet"
+**Severity:** FRICTION (trust blocker for teams) · **Status:** SHIPPED IN PART — see scope note below
 
-**Current behavior:** The version history button in the board header does nothing.
+**Current behavior (pre-fix):** The version history button in the board header does nothing.
 
 **Why it matters:** Multiplayer editing with no history means one stray Cmd+A + Delete can erase
 weeks of a team's work with no recovery path. Undo doesn't help once the session closes, and
@@ -866,6 +940,25 @@ feature question — nobody moves their planning board onto a tool that can lose
 an operation log with periodic compaction (compact, replay-heavy) is a genuine tradeoff, make it
 deliberately. Instrument storage-per-board, restore latency, snapshot interval. Do not inline
 images in snapshots (see B6) or history will balloon.
+
+**Scope decision:** Shipped — full-snapshot versions (`board_versions` table, decoupled from the
+live-sync compaction cycle), named versions, an auto-snapshot on session end, a safety-net
+auto-snapshot taken immediately before every restore (making restore itself undoable), read-only
+preview using the same Canvas renderer as live editing (not a separate lower-fidelity one), live
+cross-collaborator restore notices over the existing awareness channel, and branch-into-new-board.
+All verified end-to-end in the browser, plus 4 unit tests on the restore-reconciliation logic and 3
+server integration tests.
+
+Deferred — **continuous/periodic auto-save during one open editing session**, the way Google Docs
+saves fine-grained revisions as you type rather than only at natural checkpoints (session close,
+named save, pre-restore). Today, a board that stays open for hours with no one closing the tab has
+no auto-snapshot until someone finally disconnects — a crash or an accidental mass-delete mid-session
+has no automatic recovery point closer than that. Named versions and session-end snapshots cover the
+core trust requirement (recovering *across* sessions), but not "recover to five minutes ago within
+the same long session." Upgrade path when this gets picked up: a timer tied into `docStore`'s
+ref-counted doc lifecycle (`server/src/ws/docStore.ts`), calling the same `saveVersion()` helper
+(`server/src/versions/store.ts`) already used for session-end and pre-restore snapshots — the storage
+and reconciliation layers underneath don't need to change, only when a snapshot gets taken.
 
 **Depends on:** Nothing, but B6's storage decision affects it.
 
@@ -1199,6 +1292,77 @@ loud warning (or refuse to boot) if not. Keeps the lazy client; turns a runtime 
 deploy-time one. Worth doing before images ship to production.
 
 **Depends on:** Nothing. Small.
+
+---
+
+### I5 — Viewport-culled rendering for very large boards
+
+**Severity:** Low (pre-emptive, not a fix for an observed problem) · **Status:** DEFERRED — build much
+later, only if a real board ever needs it
+
+**Current behavior:** Every shape on a board is mapped to Konva JSX on every render, regardless of
+whether it's inside the current viewport. Measured (see the performance-benchmark numbers from this
+project's own testing): at 5000 shapes, average `stage.batchDraw()` cost is 2.14ms, p95 2.60ms, max
+11.70ms — comfortably inside a 16.7ms/60fps frame budget. Extrapolating that roughly-linear trend
+(not measured beyond 5000, so treat this as an estimate, not a benchmark), draw cost alone likely
+doesn't become visibly janky until somewhere in the **15,000–25,000 total shapes** range, at whatever
+zoom/pan state puts the most content on screen at once.
+
+**Why it matters:** Right now, nothing — this is true pre-emptive engineering, not a fix for anything
+a user has hit. It only starts to matter for a board with a huge amount of content spread across a
+large area, where most of it is off-screen at any given moment (e.g., a sprawling system-design
+diagram with many disconnected sub-sections). A normal-sized board never approaches the range where
+this matters.
+
+**What it would buy:** Viewport culling decouples draw cost from *total* shapes on the board and ties
+it to *visible* shapes instead — which this project's own data already shows handles even 5000
+simultaneously-visible shapes in ~2ms. Since a legible diagram rarely shows more than a few hundred
+shapes on screen at once regardless of zoom, the practical draw-cost ceiling effectively disappears
+for total board population. **This is not the same as "it makes a board's object ceiling infinite,"**
+and that claim shouldn't be made without the following also being addressed:
+
+- `client/src/board/useBoardDoc.ts`'s `syncShapes()` runs a full `shapesMap.forEach(...)` (converting
+  every shape's `Y.Map` to JSON) plus a full array sort on **every single Yjs doc mutation from any
+  collaborator**, not gated by viewport at all. This is a separate, unmeasured bottleneck that
+  culling does not touch — at very high total-shape counts, this (not draw cost) becomes the next
+  limiting factor. Don't claim a specific new object ceiling for the app until this is benchmarked
+  too; measure it before promising a number.
+- Yjs doc size, sync payload size on initial load, and Postgres snapshot size (`board_snapshots`) all
+  still scale with total shapes regardless of culling.
+
+**Required behavior, when this gets picked up:**
+- A render-time filter (start with a plain linear scan of shape bounding boxes against the current
+  viewport rect — see the earlier discussion in this project's history for why a quadtree specifically
+  is not worth it at this app's realistic scale; a quadtree's insert/rebalance overhead on every shape
+  move only pays for itself at object counts far beyond what a quadtree buys here) that decides which
+  shapes actually mount as Konva nodes.
+- Explicit carve-outs, each a real correctness risk if skipped (identified during this project's own
+  design discussion, not hypothetical):
+  - Never cull the shape currently being edited (`editingId`/`editingCell`) — its DOM
+    `contentEditable` overlay is positioned against a live Konva node; culling it out from under an
+    active edit orphans the overlay.
+  - Never cull the currently-selected shape(s) — the `Transformer` attaches to real Konva node
+    references and has no handling today for its target being destroyed.
+  - A connector with one endpoint on-screen and one off-screen must not lose its off-screen endpoint's
+    authoritative position — `resolveConnectorEndpoints` reads live position from `shapeRefs.current`,
+    which requires the shape's node to still be mounted.
+  - Image shapes (`server/src/r2.ts` proxies through the Node server, not signed direct URLs) must not
+    re-fetch every time they cross the viewport boundary — cache loaded image bitmaps independent of
+    mount state, or culling could net-regress perceived performance instead of improving it.
+- Benchmark `useBoardDoc.ts`'s `syncShapes()` cost at high shape counts *before* committing to a
+  target object-count ceiling for the app — don't market a number this hasn't actually earned.
+
+**Acceptance criteria:**
+- No regression to any of the four carve-outs above — verify each explicitly, since there is currently
+  no client-side test suite (see the "0 client tests vs 70 server tests" gap noted elsewhere) to catch
+  a regression here automatically.
+- Real before/after redraw-cost numbers at a shape count well beyond what's already been measured
+  (e.g., 20,000+), not just a claim that it should help.
+
+**Depends on:** Nothing to start, but do NOT build this reactively to a real reported slowdown without
+first re-running the same benchmark methodology already used for F4/render-perf testing — confirm
+draw cost is actually the bottleneck (vs. `syncShapes`, network, or something else) before reaching
+for this specific fix.
 
 ---
 

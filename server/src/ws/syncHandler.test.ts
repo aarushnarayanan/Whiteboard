@@ -49,7 +49,7 @@ describe("handleBoardConnection", () => {
     const persistSpy = vi.spyOn(docStore, "persistUpdate").mockResolvedValue();
 
     const socket = fakeSocket();
-    await handleBoardConnection(socket as any, "board-1", "viewer");
+    await handleBoardConnection(socket as any, "board-1", "viewer", "user-1");
 
     const senderDoc = new Y.Doc();
     senderDoc.getMap("shapes").set("shape-1", "x");
@@ -66,7 +66,7 @@ describe("handleBoardConnection", () => {
     const persistSpy = vi.spyOn(docStore, "persistUpdate").mockResolvedValue();
 
     const socket = fakeSocket();
-    await handleBoardConnection(socket as any, "board-1", "editor");
+    await handleBoardConnection(socket as any, "board-1", "editor", "user-1");
 
     const senderDoc = new Y.Doc();
     senderDoc.getMap("shapes").set("shape-1", "x");
@@ -87,7 +87,7 @@ describe("handleBoardConnection", () => {
     vi.spyOn(docStore, "releaseDoc").mockImplementation(() => {});
 
     const socket = fakeSocket();
-    const pending = handleBoardConnection(socket as any, "board-1", "editor");
+    const pending = handleBoardConnection(socket as any, "board-1", "editor", "user-1");
 
     // `ws` drops messages emitted with no listener, and the client sends its
     // SyncStep1 as soon as the handshake completes — the socket must be paused
@@ -109,7 +109,7 @@ describe("handleBoardConnection", () => {
     const releaseSpy = vi.spyOn(docStore, "releaseDoc").mockImplementation(() => {});
 
     const socket = fakeSocket();
-    const pending = handleBoardConnection(socket as any, "board-1", "editor");
+    const pending = handleBoardConnection(socket as any, "board-1", "editor", "user-1");
 
     // The 'close' event fires here with no listener attached and is never
     // redelivered, so the handler has to notice the dead socket itself.

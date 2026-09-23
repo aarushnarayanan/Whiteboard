@@ -12,9 +12,11 @@ import {
 } from "../api/boards";
 import { createTag, listTags, type Tag } from "../api/tags";
 import type { CommentThread } from "../api/comments";
+import type { BoardVersion } from "../api/versions";
 import type { ExportPngOptions } from "./Canvas";
 import ComingSoonButton from "../ComingSoonButton";
 import CommentComposer from "./CommentComposer";
+import VersionHistoryPanel from "./VersionHistoryPanel";
 
 interface BoardHeaderProps {
   board: BoardSummary;
@@ -31,6 +33,13 @@ interface BoardHeaderProps {
   onReply: (threadId: string, body: string, mentionedUserIds: string[]) => void;
   onResolve: (threadId: string, resolved: boolean) => void;
   onPanToThread: (threadId: string) => void;
+  versions: BoardVersion[];
+  previewingVersionId: string | null;
+  onOpenVersions: () => void;
+  onSaveVersion: (label: string) => Promise<void>;
+  onPreviewVersion: (version: BoardVersion) => void;
+  onRestoreVersion: (version: BoardVersion) => Promise<void>;
+  onBranchVersion: (version: BoardVersion) => void;
 }
 
 function BackIcon() {
@@ -137,12 +146,21 @@ export default function BoardHeader({
   onReply,
   onResolve,
   onPanToThread,
+  versions,
+  previewingVersionId,
+  onOpenVersions,
+  onSaveVersion,
+  onPreviewVersion,
+  onRestoreVersion,
+  onBranchVersion,
 }: BoardHeaderProps) {
   const isOwner = board.role === "owner";
 
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [showResolved, setShowResolved] = useState(false);
   const [expandedThreadId, setExpandedThreadId] = useState<string | null>(null);
+
+  const [versionsOpen, setVersionsOpen] = useState(false);
   const unresolvedCount = threads.filter((t) => !t.resolved).length;
   const visibleThreads = threads.filter((t) => showResolved || !t.resolved);
 
@@ -571,7 +589,39 @@ export default function BoardHeader({
           </>
         )}
       </div>
-      <ComingSoonButton className="board-header-icon-btn" label="Version history" icon={<HistoryIcon />} />
+      <div className="board-header-versions-wrap">
+        <button
+          type="button"
+          className="board-header-icon-btn"
+          onClick={() => {
+            setVersionsOpen((o) => !o);
+            onOpenVersions();
+          }}
+          aria-label="Version history"
+          title="Version history"
+        >
+          <HistoryIcon />
+        </button>
+        {versionsOpen && (
+          <>
+            <div className="board-header-menu-backdrop" onClick={() => setVersionsOpen(false)} />
+            <div className="board-header-versions-panel">
+              <div className="board-header-comments-panel-head">
+                <span className="board-header-tag-popover-label">Version history</span>
+              </div>
+              <VersionHistoryPanel
+                versions={versions}
+                canEdit={canEdit}
+                previewingVersionId={previewingVersionId}
+                onSave={onSaveVersion}
+                onPreview={onPreviewVersion}
+                onRestore={onRestoreVersion}
+                onBranch={onBranchVersion}
+              />
+            </div>
+          </>
+        )}
+      </div>
       <ComingSoonButton className="board-header-icon-btn" label="Presentation mode" icon={<PresentIcon />} />
 
       <div className="board-header-divider" />

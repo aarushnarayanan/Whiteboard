@@ -37,7 +37,7 @@ describe("authenticateWSRequest", () => {
 
   it("resolves a real member's role from their session cookie", async () => {
     const result = await authenticateWSRequest(req(`/ws/boards/${boardId}`, cookie));
-    expect(result).toEqual({ boardId, role: "editor" });
+    expect(result).toEqual({ boardId, role: "editor", userId });
   });
 
   it("rejects a missing cookie", async () => {
