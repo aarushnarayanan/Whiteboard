@@ -2,6 +2,10 @@
 
 A real-time collaborative whiteboard — sticky notes, shapes, connectors, tables, images, and version history, synced live across sessions.
 
+## Link To Try
+
+https://whiteboard-production-9b84.up.railway.app/
+
 ## Stack
 
 - **Client:** React, Konva (canvas rendering), Yjs (CRDT sync)
